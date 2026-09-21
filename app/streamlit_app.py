@@ -8,8 +8,7 @@ import streamlit as st
 
 st.set_page_config(page_title="Stolen Bike Matcher", layout="wide")
 st.title("Stolen Bike Matcher")
-st.caption("Candidates for police review — never confront the seller.")
-
+st.caption("This tool creates a matching between reported stolen bikes in second-hand marketplaces for police review.")
 with st.form("report_form"):
     st.subheader("Report a stolen bike")
     photos = st.file_uploader(
@@ -24,9 +23,9 @@ with st.form("report_form"):
         color = st.text_input("Colour (optional)")
     with col_b:
         stolen_on = st.date_input("Theft date (required)", value=date.today())
-        location = st.text_input("Theft location (required)", placeholder="Amsterdam")
+        location = st.text_input("Theft location (required)", placeholder="Maastricht")
         police_nr = st.text_input("Police report number (optional)")
-    notes = st.text_area("Notes", placeholder="Lock cut at station bike rack…")
+    notes = st.text_area("Notes", placeholder="Any additional information...")
     submitted = st.form_submit_button("Find candidate listings")
 
 if submitted:
@@ -56,11 +55,3 @@ if submitted:
         )
 
 st.divider()
-st.markdown(
-    """
-    **Next steps (when a candidate appears)**
-    - Add the listing to the police report
-    - Check the serial via Stop Heling
-    - **Do not confront the seller**
-    """
-)
