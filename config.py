@@ -20,6 +20,16 @@ CLIP_MODEL = os.getenv("CLIP_MODEL", "ViT-B-32")
 VLM_MODEL = os.getenv("VLM_MODEL", "")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+GOOGLE_API_KEY = (
+    os.getenv("GOOGLE_API_KEY")
+    or os.getenv("Google_API_KEY")
+    or os.getenv("GEMINI_API_KEY")
+    or ""
+).strip().strip('"')
+GEMINI_BASE_URL = os.getenv(
+    "GEMINI_BASE_URL",
+    "https://generativelanguage.googleapis.com/v1beta/openai/",
+)
 LLM_TIMEOUT_S = float(os.getenv("LLM_TIMEOUT_S", "60"))
 
 DATA_DIR = ROOT / "data"

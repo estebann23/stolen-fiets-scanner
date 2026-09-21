@@ -103,3 +103,95 @@ VERIFY BEFORE FINISHING
 - With OPENROUTER_API_KEY and VLM_MODEL set, `python -m enrichment.attributes` prints a valid
   BikeAttributes JSON for one listing and a second run logs "skip" (idempotent + cached).
 - Print the files you created/changed and the exact run command.
+
+######Prompt 2 Stage 3
+
+
+
+
+CONTEXT
+Existing Python 3.11 hackathon repo; SPEC.md is the single source of truth — read §5.2
+(embeddings), §6 (schema), §7.2 (how image similarity is used), and §11 (conventions) first.
+enrichment/llm_client.py and enrichment/attributes.py already exist from a prior step — do not
+touch them. Match the style of config.py / db.py (from __future__ import annotations, full type
+hints, small functions, a __main__ smoke block). Do NOT change the DB schema.
+
+TASK
+Implement CLIP embeddings + a simple in-memory vector index in ONE new module:
+  enrichment/embeddings.py
+plus minimal plumbing in config.py and requirements.txt.
+
+EMBEDDING BACKEND: local open_clip (NOT OpenRouter — embeddings are computed locally).
+- Load the model ONCE at module level (lazy singleton), using CLIP_MODEL and a new
+  CLIP_PRETRAINED from config. Default device: "cuda" if torch.cuda.is_available() else "cpu".
+- Produce L2-normalized float32 vectors so cosine similarity == dot product.
+- Note in a comment that the first run downloads the model weights (~350MB for ViT-B-32).
+
+SUPPORTING EDITS (only these):
+- config.py: add CLIP_PRETRAINED (default "laion2b_s34b_b79k"), EMB_CACHE_DIR (default
+  DATA_DIR/"cache"/"embeddings"). Keep CLIP_MODEL as-is (env-driven, default "ViT-B-32").
+- requirements.txt: add `open-clip-torch` and `torch`. (numpy/pillow already present.)
+- .gitignore: ensure data/cache/ is ignored (add if missing).
+
+enrichment/embeddings.py — REQUIREMENTS
+
+Core encoders (typed, small, pure where possible):
+- def embed_image(path: Path) -> np.ndarray   # opens with PIL, preprocess, encode, L2-norm,
+                                               # returns float32 shape (D,)
+- def embed_text(text: str) -> np.ndarray      # open_clip tokenizer + encode_text, L2-norm
+- Both operate under torch.no_grad(); reuse the singleton model/preprocess/tokenizer.
+
+BLOB (de)serialization for the DB (matches listing_images.clip_vec / report_images.clip_vec):
+- def vec_to_blob(v: np.ndarray) -> bytes      # v.astype(float32).tobytes()
+- def blob_to_vec(b: bytes) -> np.ndarray      # np.frombuffer(b, dtype=float32)
+
+IMAGE VECTORS -> DB (idempotent):
+- def embed_listing_images(conn, listing_id: str, *, force: bool = False) -> int
+  For each row in listing_images for this listing: if clip_vec is already non-null and not
+  force, skip; else embed the image at `path` and UPDATE that row's clip_vec. Return the
+  number of vectors written. Log "done <id>: n/total" (skip when nothing to do).
+- Provide the analogous def embed_report_images(conn, report_id, *, force=False) -> int so the
+  online report path reuses the exact same code (SPEC key principle).
+
+TEXT VECTORS -> DISK CACHE (schema has no text-vector column; do NOT add one):
+- def embed_description_cached(entity_id: str, text: str, *, force: bool = False) -> np.ndarray
+  Cache to EMB_CACHE_DIR/text/<entity_id>.npy; on cache hit load and return; else compute,
+  save, return. This satisfies the "cache every embedding" hard rule via disk.
+
+VECTOR INDEX (the "vector index" deliverable — brute-force numpy, no FAISS):
+- class ImageIndex with:
+    @classmethod build_from_db(cls, conn) -> "ImageIndex"
+      Load every listing_images row that has a non-null clip_vec into: a float32 matrix of
+      shape (N, D) and a parallel list of (listing_id, image_id, path). Skip nulls.
+    def query(self, query_vecs: np.ndarray, top_k: int = 10) -> list[tuple[str, float]]
+      query_vecs is (Q, D) (one row per report photo). Compute cosine (matrix @ query.T),
+      take the max over BOTH photos-of-a-listing AND query photos, i.e. per listing_id keep
+      the single best similarity across all its images vs any query image (SPEC §7.2: "max
+      image cosine similarity, any report photo vs any listing photo"). Return the top_k
+      (listing_id, score) sorted desc. Handle an empty index gracefully (return []).
+
+__main__ smoke test:
+- Connect to the DB, pick the first listing that has image rows, embed_listing_images on it,
+  print vectors-written and the vector dim; assert a photo's cosine self-similarity ≈ 1.0;
+  embed_description_cached on its description and print the text-vector dim; build ImageIndex
+  and run query() with that listing's own photo vectors, printing the top-3 (its own id should
+  rank #1). A second run must log "skip" (idempotent) and hit the caches.
+
+HARD RULES (SPEC §11)
+- Idempotent & resumable: skip already-embedded images/text unless force=True; log counts.
+- Cache every embedding (image vecs in DB BLOB, text vecs on disk). Never recompute silently.
+- Typed everywhere; small testable functions. No secrets, no network beyond the one-time model
+  weight download. Do NOT alter the SQLite schema.
+
+OUT OF SCOPE — do NOT create or edit: llm_client.py, attributes.py, serial_ocr.py,
+risk_signals.py, run_enrichment.py, anything under matching/, api/, app/, eval/, db.py, or the
+schema. No FAISS/sqlite-vec.
+
+VERIFY BEFORE FINISHING
+- `python -c "import enrichment.embeddings"` imports cleanly.
+- vec_to_blob/blob_to_vec round-trips a random vector exactly (float32).
+- embed_image on a solid-color PIL image returns an L2-normalized vector (‖v‖≈1) of the
+  expected dim.
+- `python -m enrichment.embeddings` prints dims, the ≈1.0 self-similarity, and a top-3 where
+  the source listing ranks first; a second run logs skips.
+- Print the files you created/changed and the exact run command.

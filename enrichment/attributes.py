@@ -11,9 +11,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError, field_validator
 
-from config import OPENROUTER_API_KEY, ROOT, VLM_MODEL
+from config import ROOT
 from db import connect
-from enrichment.llm_client import SETUP_HINT, call_vlm_json
+from enrichment.llm_client import SETUP_HINT, call_vlm_json, vlm_ready
 
 log = logging.getLogger(__name__)
 
@@ -246,7 +246,7 @@ def enrich_listing(
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    if not OPENROUTER_API_KEY or not VLM_MODEL:
+    if not vlm_ready():
         print(SETUP_HINT)
         sys.exit(0)
     conn = connect()

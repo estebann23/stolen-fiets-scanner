@@ -13,6 +13,8 @@ from typing import Any
 from openai import APIConnectionError, APITimeoutError, OpenAI
 
 from config import (
+    GEMINI_BASE_URL,
+    GOOGLE_API_KEY,
     LLM_CACHE_DIR,
     LLM_TIMEOUT_S,
     OPENROUTER_API_KEY,
@@ -23,15 +25,19 @@ from config import (
 log = logging.getLogger(__name__)
 
 SETUP_HINT = (
-    "Set OPENROUTER_API_KEY and VLM_MODEL in .env (see .env.example). "
-    "Do not commit secrets."
+    "Set OPENROUTER_API_KEY or GOOGLE_API_KEY, and VLM_MODEL, in .env "
+    "(see .env.example). Do not commit secrets."
 )
+
+
+def vlm_ready() -> bool:
+    return bool((OPENROUTER_API_KEY or GOOGLE_API_KEY) and VLM_MODEL)
 
 
 def require_vlm_config() -> None:
     missing: list[str] = []
-    if not OPENROUTER_API_KEY:
-        missing.append("OPENROUTER_API_KEY")
+    if not OPENROUTER_API_KEY and not GOOGLE_API_KEY:
+        missing.append("OPENROUTER_API_KEY or GOOGLE_API_KEY")
     if not VLM_MODEL:
         missing.append("VLM_MODEL")
     if missing:
@@ -148,6 +154,12 @@ def _write_cache(key: str, raw_content: str, parsed: dict[str, Any]) -> None:
 
 
 def _client(timeout_s: float) -> OpenAI:
+    if GOOGLE_API_KEY and not OPENROUTER_API_KEY:
+        return OpenAI(
+            base_url=GEMINI_BASE_URL,
+            api_key=GOOGLE_API_KEY,
+            timeout=timeout_s,
+        )
     return OpenAI(
         base_url=OPENROUTER_BASE_URL,
         api_key=OPENROUTER_API_KEY,
@@ -223,7 +235,7 @@ def call_vlm_json(
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    if not OPENROUTER_API_KEY or not VLM_MODEL:
+    if not vlm_ready():
         print(SETUP_HINT)
         sys.exit(0)
     result = call_vlm_json(
