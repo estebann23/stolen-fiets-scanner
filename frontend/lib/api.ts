@@ -1,5 +1,6 @@
+/** Same-origin `/backend` is proxied to FastAPI (see next.config.ts). */
 export const API_URL = (
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"
+  process.env.NEXT_PUBLIC_API_URL || "/backend"
 ).replace(/\/+$/, "")
 
 export type Verdict = "likely_same" | "possibly_same" | "different"
