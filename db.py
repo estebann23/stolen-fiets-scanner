@@ -250,6 +250,56 @@ def iter_listing_ids(conn: sqlite3.Connection) -> Iterable[str]:
         yield row["id"]
 
 
+def insert_report(conn: sqlite3.Connection, report: dict[str, Any]) -> None:
+    conn.execute(
+        """
+        INSERT INTO reports (
+          id, created_at, stolen_at, stolen_lat, stolen_lon,
+          serial, brand, color, notes, police_report_nr
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            report["id"],
+            report.get("created_at"),
+            report.get("stolen_at"),
+            report.get("stolen_lat"),
+            report.get("stolen_lon"),
+            report.get("serial"),
+            report.get("brand"),
+            report.get("color"),
+            report.get("notes"),
+            report.get("police_report_nr"),
+        ),
+    )
+
+
+def add_report_image(conn: sqlite3.Connection, report_id: str, path: str) -> int:
+    cursor = conn.execute(
+        "INSERT INTO report_images (report_id, path) VALUES (?, ?)",
+        (report_id, path),
+    )
+    return int(cursor.lastrowid)
+
+
+def fetch_report(report_id: str) -> dict[str, Any] | None:
+    conn = connect()
+    try:
+        report = conn.execute(
+            "SELECT * FROM reports WHERE id = ?", (report_id,)
+        ).fetchone()
+        if report is None:
+            return None
+        images = conn.execute(
+            "SELECT path FROM report_images WHERE report_id = ? ORDER BY id",
+            (report_id,),
+        ).fetchall()
+        payload = dict(report)
+        payload["images"] = [row["path"] for row in images]
+        return payload
+    finally:
+        conn.close()
+
+
 def main() -> None:
     init_schema()
     imported = 0
