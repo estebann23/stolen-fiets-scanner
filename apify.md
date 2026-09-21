@@ -1,29 +1,20 @@
-# Apify Ingestion Engine Integration Guide (`apify-integration.md`)
-
-This guide details the integration of **Apify** into the Velox Maastricht Next.js architecture. It covers client configuration, Route Handlers, schema normalization, and stage-resilient failover mechanisms.
-
----
-
-## 1. Overview & Architectural Role
-
-Within the Velox forensic pipeline, Apify operates as the **external perimeter crawler** across second-hand classified platforms (*Marktplaats*, *2ememain*, *Kleinanzeigen*).
-
+Apify Ingestion Engine Integration Guide (apify-integration.md)
+This guide details the integration of Apify into the Velox Maastricht Next.js architecture. It covers client configuration, Route Handlers, schema normalization, targeted border actors, and stage-resilient failover mechanisms.
+1. Overview & Architectural Role
+Within the Velox forensic pipeline, Apify operates as the external perimeter crawler across second-hand classified platforms (Marktplaats, 2ememain, Kleinanzeigen).
 To prevent live presentation latency (scraping runs taking 20–45s) from interrupting the 2-minute pitch:
-
-* **Production Mode:** Apify runs on a recurring schedule (or webhook trigger), persisting scraped marketplace data into an Apify Dataset.
-* **Stage / Demo Mode:** The Next.js Route Handler reads directly from the pre-populated Apify Dataset (or falls back deterministically to in-memory mocks if the network drops).
-
-```
+Production Mode: Apify runs on a recurring schedule, persisting scraped marketplace data into an Apify Dataset.
+Stage / Demo Mode: The Next.js Route Handler reads directly from a pre-populated Apify Dataset (or falls back deterministically to in-memory mocks if the network drops).
 ┌──────────────────────────────────────────────────────────┐
 │              Euregio Classifieds Platforms               │
-│      (Marktplaats.nl, 2ememain.be, Kleinanzeigen.de)      │
+│      (Marktplaats.nl, 2ememain.be, Kleinanzeigen.de)     │
 └────────────────────────────┬─────────────────────────────┘
                              │
                              ▼
 ┌──────────────────────────────────────────────────────────┐
 │                   Apify Actor Network                    │
-│      - Scheduled / On-Demand Crawlers                    │
-│      - Proxy Rotation & Anti-Scraping Bypass             │
+│      - haketa/marktplaats-scraper (NL / BE)              │
+│      - beatanalytics/kleinanzeigen-scraper (DE)          │
 └────────────────────────────┬─────────────────────────────┘
                              │
                              ▼
@@ -39,43 +30,39 @@ To prevent live presentation latency (scraping runs taking 20–45s) from interr
 │   2. Map to canonical MarketplaceListing contract        │
 │   3. Pass to Euregio Language Agent & Data Fusion Engine │
 └──────────────────────────────────────────────────────────┘
+2. Selected Apify Actors & Store Links
+Territory / Platform	Selected Actor & Store Link	Execution Method	Key Search Parameters
+Netherlands & Belgium
 
-```
 
----
+(Marktplaats.nl, 2ememain.be, 2dehands.be)
 
-## 2. Package Installation & Credentials
+haketa/marktplaats-scraper	Direct internal JSON API (/lrp/api/search)	searchQuery: "Gazelle", postcode: "6211", distanceMeters: 30000
+Germany (Aachen Border)
 
+
+(Kleinanzeigen.de)
+
+beatanalytics/kleinanzeigen-scraper	HTTP search endpoints with radius	searchKeywords: ["Fahrrad"], searchLocations: ["52062"], searchRadius: 30
+3. Package Installation & Credentials
 Install the official Node.js client:
-
-```bash
+Bash
 npm install apify-client
-
-```
-
-Add your credentials to `.env.local` (**never** expose these with `NEXT_PUBLIC_`):
-
-```env
-# Apify Personal API Token (found in Apify Console -> Settings -> Integrations)
+Add your credentials to .env.local (never expose these with NEXT_PUBLIC_):
+Code-Snippet
+# Apify Personal API Token (Console -> Settings -> Integrations)
 APIFY_API_TOKEN=apify_api_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-# Optional: Default Dataset ID populated by scheduled actor runs
+# Default Dataset ID pre-populated by your preparation run
 APIFY_DATASET_ID=your_dataset_id_here
 
-# Optional: Target Actor ID for on-demand trigger runs
-APIFY_ACTOR_ID=your_actor_id_here
-
-```
-
-Ensure `.env.local` is listed in your `.gitignore`.
-
----
-
-## 3. Client Singleton (`src/lib/apify.ts`)
-
+# Selected Actor IDs
+APIFY_MARKTPLAATS_ACTOR_ID=haketa/marktplaats-scraper
+APIFY_KLEINANZEIGEN_ACTOR_ID=beatanalytics/kleinanzeigen-scraper
+Ensure .env.local is listed in your .gitignore.
+4. Client Singleton (src/lib/apify.ts)
 Create a singleton client instance to reuse across Route Handlers:
-
-```typescript
+TypeScript
 import { ApifyClient } from 'apify-client';
 
 const token = process.env.APIFY_API_TOKEN;
@@ -87,16 +74,9 @@ if (!token && process.env.NODE_ENV !== 'production') {
 export const apify = new ApifyClient({
   token: token || '',
 });
-
-```
-
----
-
-## 4. Route Handler: Ingestion & Live Scrape Trigger
-
-Create `src/app/api/scrape/route.ts` to manage fetching and executing tasks.
-
-```typescript
+5. Route Handler: Ingestion & Live Scrape Trigger
+Create src/app/api/scrape/route.ts to manage fetching and executing tasks.
+TypeScript
 import { NextResponse } from 'next/server';
 import { apify } from '@/lib/apify';
 import { mapApifyItemToListing } from '@/lib/apify-mapper';
@@ -150,24 +130,18 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const actorId = process.env.APIFY_ACTOR_ID;
-
-  if (!actorId) {
-    return NextResponse.json(
-      { success: false, error: 'APIFY_ACTOR_ID not configured' },
-      { status: 400 }
-    );
-  }
+  const marktplaatsActorId = process.env.APIFY_MARKTPLAATS_ACTOR_ID || 'haketa/marktplaats-scraper';
 
   try {
-    const { query = 'Gazelle', location = 'Maastricht', maxResults = 5 } = await req.json();
+    const { query = 'fiets', location = '6211', maxResults = 5 } = await req.json();
 
-    // Trigger on-demand Actor run with a strict execution cap
-    const run = await apify.actor(actorId).call(
+    // Trigger haketa/marktplaats-scraper with internal JSON API speed
+    const run = await apify.actor(marktplaatsActorId).call(
       {
         searchQuery: query,
-        location,
-        maxItems: maxResults,
+        postcode: location,
+        distanceMeters: 30000,
+        maxResults: maxResults,
       },
       {
         timeoutSecs: 25,
@@ -192,16 +166,9 @@ export async function POST(req: Request) {
     }, { status: 500 });
   }
 }
-
-```
-
----
-
-## 5. Schema Normalization Mapper (`src/lib/apify-mapper.ts`)
-
-Converts diverse scraper outputs (different HTML structures, currencies, languages) into Velox’s strict `MarketplaceListing` contract:
-
-```typescript
+6. Schema Normalization Mapper (src/lib/apify-mapper.ts)
+Converts scraper outputs into Velox’s strict MarketplaceListing contract:
+TypeScript
 import { MarketplaceListing } from '@/lib/scan-types';
 
 export function mapApifyItemToListing(raw: any): MarketplaceListing {
@@ -214,34 +181,47 @@ export function mapApifyItemToListing(raw: any): MarketplaceListing {
     platform === '2ememain' ? 'BE' :
     platform === 'Kleinanzeigen' ? 'DE' : 'NL';
 
-  // Distance estimation fallback relative to Maastricht (Vrijthof center)
+  // Distance estimation relative to Maastricht center (Vrijthof)
   const distanceKm = typeof raw.distanceKm === 'number' 
     ? raw.distanceKm 
     : (originCountry === 'BE' ? 28 : originCountry === 'DE' ? 32 : 4);
 
-  // Compass bearing estimation (Liège = ~200°, Aachen = ~110°, Maastricht = ~0°)
+  // Compass bearing (Liège = ~205°, Aachen = ~115°, Maastricht = ~45°)
   const bearingDeg = typeof raw.bearingDeg === 'number'
     ? raw.bearingDeg
     : (originCountry === 'BE' ? 205 : originCountry === 'DE' ? 115 : 45);
 
+  // Parse EUR price (handles integer cents from haketa or formatted strings)
+  let price = 0;
+  if (typeof raw.priceCents === 'number') {
+    price = raw.priceCents / 100;
+  } else if (raw.price) {
+    price = parseFloat(String(raw.price).replace(/[^0-9.]/g, '')) || 0;
+  }
+
   return {
-    id: raw.id || String(raw.url ? Buffer.from(raw.url).toString('base64').slice(0, 16) : Math.random()),
+    id: raw.id || raw.itemId || String(raw.url ? Buffer.from(raw.url).toString('base64').slice(0, 16) : Math.random()),
     platform,
     originCountry,
-    title: raw.title || 'Unknown Listing',
-    rawDescription: raw.description || raw.text || '',
-    normalizedTokens: [], // Populated downstream by the Euregio Language Agent
-    priceEur: parseFloat(String(raw.price).replace(/[^0-9.]/g, '')) || 0,
+    title: raw.title || 'Unknown Bike Listing',
+    rawDescription: raw.description || raw.categorySpecificDescription || '',
+    normalizedTokens: [], // Populated downstream by Euregio Language Agent
+    priceEur: price,
     location: {
-      city: raw.city || (originCountry === 'BE' ? 'Liège' : originCountry === 'DE' ? 'Aachen' : 'Maastricht'),
+      city: raw.location?.city || raw.city || (originCountry === 'BE' ? 'Liège' : originCountry === 'DE' ? 'Aachen' : 'Maastricht'),
       distanceKm,
       bearingDeg,
     },
-    postedTimestamp: raw.publishedAt || raw.date || new Date().toISOString(),
+    postedTimestamp: raw.date || raw.publishedAt || new Date().toISOString(),
     sellerAccountAgeDays: parseInt(raw.sellerAccountAgeDays, 10) || 12,
-    imageUrl: raw.imageUrl || raw.image || raw.images?.[0] || '/demo-peugeot.jpg',
+    imageUrl: raw.imageUrls?.[0] || raw.imageUrl || raw.images?.[0] || '/demo-peugeot.jpg',
     markers: [],
   };
 }
+7. Jury Defense & Architecture Alignment
+When demonstrating or explaining the Apify integration to the panel:
+For Prof. Dr. Anna Wilbik (Data Fusion & Systems):
+"Live scraping in production introduces external network variance and varying schema densities. Our ingestion layer uses Apify for continuous web polling, but decouples ingestion from decision logic: raw crawled payloads are normalized via our canonical taxonomy mapper into uniform feature vectors before entering the multi-source fusion engine."
 
-```
+For Jean-Maurice Henkel (Unit Economics & Feasibility):
+"Real-time scraping of thousands of high-resolution images during an active user query is computationally inefficient. We utilize a tiered model: Apify continuously ingests low-bandwidth metadata into an indexed dataset cache, and heavy visual forensic inference is triggered exclusively when high-probability candidates pass initial price and geographic filters."
