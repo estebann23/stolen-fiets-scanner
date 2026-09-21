@@ -1,0 +1,31 @@
+# Targeted Marktplaats searches (not a broad crawl).
+# Brands, types, region, and price bands from SPEC.md §5.1.
+
+brands:
+  - Gazelle
+  - Batavus
+  - Cortina
+  - VanMoof
+  - Sparta
+  - Cube
+  - Trek
+  - Giant
+
+types:
+  - e-bike
+  - racefiets
+  - moederfiets
+  - bakfiets
+  - stadsfiets
+  - mountainbike
+
+region:
+  # TODO: set demo region
+  name: ""
+  radius_km: 50
+
+price_bands:
+  min_eur: null
+  max_eur: null
+
+max_listings: 250

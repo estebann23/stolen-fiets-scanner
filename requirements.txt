@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+pydantic
+python-multipart
+python-dotenv
+streamlit
+pyyaml
+open-clip-torch
+faiss-cpu
+easyocr
+anthropic
+openai
+httpx
+numpy
+pillow

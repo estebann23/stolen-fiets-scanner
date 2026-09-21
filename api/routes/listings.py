@@ -1,0 +1,1 @@
+"""Listing detail routes."""
