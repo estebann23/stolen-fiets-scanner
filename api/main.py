@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from api.routes.listings import router as listings_router
 from api.routes.reports import router as reports_router
 from api.schemas import HealthResponse
+from config import DATA_DIR
 from db import init_schema, listing_count
 
 app = FastAPI(title="Stolen Bike Matcher", version="0.1.0")
@@ -19,6 +21,7 @@ app.add_middleware(
 )
 app.include_router(listings_router)
 app.include_router(reports_router)
+app.mount("/data", StaticFiles(directory=DATA_DIR), name="data")
 
 
 @app.on_event("startup")
