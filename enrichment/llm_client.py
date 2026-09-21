@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from openai import APIConnectionError, APITimeoutError, OpenAI
+from openai import APIConnectionError, APITimeoutError, BadRequestError, OpenAI
 
 from config import (
     GEMINI_BASE_URL,
@@ -205,12 +205,19 @@ def call_vlm_json(
             timeout,
         )
         try:
-            response = client.chat.completions.create(
-                model=VLM_MODEL,
-                messages=messages,
-                temperature=0,
-                response_format={"type": "json_object"},
-            )
+            create_kwargs: dict[str, Any] = {
+                "model": VLM_MODEL,
+                "messages": messages,
+                "temperature": 0,
+            }
+            try:
+                response = client.chat.completions.create(
+                    **create_kwargs,
+                    response_format={"type": "json_object"},
+                )
+            except BadRequestError:
+                log.info("vlm response_format unsupported; retrying without it")
+                response = client.chat.completions.create(**create_kwargs)
             raw = ""
             if response.choices:
                 message = response.choices[0].message
