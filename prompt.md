@@ -384,3 +384,122 @@ VERIFY BEFORE FINISHING
 - POST /reports with 0 photos -> 422; with 6 photos -> 422; with a .txt "photo" -> 422.
 - Provide the exact curl command (multipart -F) used to test, and print the files created/
   changed.
+
+
+   Prompt 5 Stage 6
+
+   CONTEXT
+Existing Python 3.11 hackathon repo; SPEC.md is the single source of truth — read §7.2 (three
+matching stages + weights), §7.3 (results), §8 (API + candidate shape), §6 (matches table),
+§11. Reuse (do not modify): db.py (connect, fetch_report, fetch_listing), enrichment/
+embeddings.py (blob_to_vec, ImageIndex, embed_description_cached), enrichment/attributes.py
+(extract_attributes, BikeAttributes), enrichment/serial_ocr.py (normalise_serial), enrichment/
+llm_client.py (call_vlm_json), config.py (MATCH_WEIGHTS, MATCH_RADIUS_KM). Report image vectors
+are already in report_images.clip_vec; listing image vectors in listing_images.clip_vec; text
+vectors are on disk via embed_description_cached keyed by id. Match config.py/db.py style. Do
+NOT change the schema.
+
+TASK
+Implement the three-stage matcher and wire the API:
+  matching/filters.py, matching/scorer.py, matching/verifier.py, matching/explain.py
+  api/routes/reports.py -> implement POST /reports/{id}/match and GET /reports/{id}/matches
+  db.py -> add match persistence helpers (schema unchanged)
+  config.py -> add VERIFY_TOP_K = 10, RESULT_TOP_K = 5
+
+SUPPORTING db.py HELPERS
+- def upsert_match(conn, m: dict) -> None    # INSERT OR REPLACE into matches (all §6 cols)
+- def fetch_matches(report_id) -> list[dict] # ordered as stored (best first)
+- a helper to list candidate listing rows joined with listing_attributes for scoring.
+
+matching/filters.py — STAGE 1 hard filters
+- def canonical_serial(s: str) -> str: normalise_serial then map OCR confusables to a canonical
+  form: O->0, I->1, L->1, S->5, B->8. 
+- def serial_matches(report_serial: str | None, listing_serial: str | None) -> bool: True if
+  both present and canonical forms are equal.
+- def haversine_km(lat1, lon1, lat2, lon2) -> float.
+- def apply_filters(report: dict, listings: list[dict], radius_km: float) -> tuple[list[dict],
+  set[str]]: returns (kept_listings, serial_hit_ids).
+    * Compute serial hits first (report.serial vs each listing_attributes.serial_found).
+      Serial-hit listings BYPASS all other filters (SPEC: flag as top candidate immediately).
+    * For non-hits, DROP a listing if: posted_at is before stolen_at; OR both sides have a
+      confident is_electric that clearly disagrees (only when both known); OR both sides have
+      coords AND haversine > radius_km. If coords or a field are missing, do NOT drop on that
+      criterion (be conservative). 
+
+matching/scorer.py — STAGE 2 weighted score (weights from config.MATCH_WEIGHTS; DO NOT include
+suspicion_score anywhere)
+- def image_similarity(report_vecs: np.ndarray, listing_vecs: np.ndarray) -> float: max pairwise
+  cosine (vectors are already L2-normalized -> dot), clamp [0,1]. 0.0 if either side empty.
+- def attribute_agreement(report_attrs: BikeAttributes, listing_attrs: dict) -> float: over
+  brand, model, colour, frame_shape, accessories (and bike_type): for each field non-null on
+  BOTH sides, score exact match = 1 (colors/accessories = Jaccard overlap); average over the
+  compared fields; 0.0 if none comparable. Case-insensitive. Return [0,1].
+- def mark_overlap(report_marks, listing_marks) -> float: lowercase token/substring overlap
+  (Jaccard) of the two mark lists; 0.0 if either empty. [0,1].
+- def text_similarity(report_text_vec, listing_text_vec) -> float: cosine, clamp [0,1]; 0.0 if
+  a vector is missing.
+- def score_candidate(...) -> tuple[float, dict]: returns (score, components) where score =
+  W["image"]*img + W["attributes"]*attr + W["marks"]*marks + W["text"]*text, and components is
+  the per-signal breakdown (for explanations). If this candidate is a serial hit, force score =
+  1.0. Do NOT renormalize weights for missing modalities (keep the contract exact). 
+- Add a comment: suspicion_score is NEVER read here (SPEC hard rule).
+
+matching/verifier.py — STAGE 3 VLM rerank
+- Pydantic model Verdict {verdict: Literal["likely_same","possibly_same","different"], reasons:
+  list[str], confidence: float}.
+- def verify_pair(report_image_paths, listing_image_paths) -> Verdict | None: strict-JSON prompt
+  ("are these the same physical bike?") via llm_client.call_vlm_json with report photos and
+  listing photos; validate; on failure (client returns None or invalid) return None.
+- def rerank(report: dict, scored: list[dict], top_k: int) -> list[dict]: verify only the top
+  top_k by Stage-2 score. SERIAL HITS SKIP the VLM (verdict "likely_same", confidence 1.0,
+  reason "exact serial match"). Attach verdict/reasons/confidence to each. Final ordering: sort
+  by verdict priority (likely_same > possibly_same > None > different) then by Stage-2 score
+  desc. Keep each item's numeric `score` = its Stage-2 score (serial hits = 1.0).
+
+matching/explain.py — human-readable reasons
+- def explain(report: dict, listing: dict, components: dict, verdict: Verdict | None) -> list[str]:
+  short bullet strings from: shared attributes (same brand/colour/frame/accessories), shared
+  marks, verifier reasons, and temporal/geo context ("posted 3 days after theft, 12 km away"
+  from posted_at - stolen_at and haversine when coords exist). Return a few concise strings like
+  the SPEC §7.2 example. Include "Exact serial match" first when serial_match.
+
+POST /reports/{id}/match — WIRING
+- 404 if the report is missing. Load report (+image paths + report text vec + report attrs via
+  attributes.extract_attributes on the report photos, cached from intake), load candidate
+  listings (+attributes +image vecs +text vecs).
+- Pipeline: apply_filters -> score_candidate for each kept listing -> rerank(top VERIFY_TOP_K)
+  -> explain each. Take RESULT_TOP_K (serial hits pinned to the front).
+- Persist each result to matches via upsert_match (score, serial_match, verdict, reasons JSON,
+  created_at). 
+- Build MatchResponse with MatchCandidate items exactly per SPEC §8: listing_id, url, score,
+  serial_match, verdict, reasons, suspicion_score (READ from listings.suspicion_score, for
+  DISPLAY ONLY), listing_image (first listing photo), report_image (first report photo).
+- Wrap VLM-dependent steps so a missing OPENROUTER_API_KEY degrades gracefully (verdict None,
+  attributes null) and matching still returns image+text-ranked candidates.
+
+GET /reports/{id}/matches — return cached results
+- 404 if report missing. If no cached matches, 404 with "run POST /reports/{id}/match first".
+  Else return the stored matches as a MatchResponse (rebuild image paths + suspicion_score for
+  display).
+
+HARD RULES (SPEC §11 / §7)
+- Exact weights from config; serial override to 1.0. suspicion_score is displayed separately and
+  is NEVER part of the score or ranking. Every VLM output Pydantic-validated (retry-once-then-
+  null is handled by llm_client). Cache: verifier calls are cached by llm_client (no re-pay).
+  Typed everywhere; small functions. No secrets, no scraping. Do NOT alter the schema.
+
+OUT OF SCOPE — do NOT create or edit: enrichment/* internals, app/, eval/, collector/, the
+schema, or the POST /reports intake route (already implemented).
+
+VERIFY BEFORE FINISHING
+- `python -c "import matching.filters, matching.scorer, matching.verifier, matching.explain,
+  api.main"` imports cleanly.
+- canonical_serial("GZ1234S6") maps S->5; serial_matches("GZO123","GZ0123") is True.
+- image_similarity of a vector set against itself ≈ 1.0; score with only image/text present is
+  0.45*img + 0.10*text (no renormalization).
+- End-to-end: create a report (existing POST /reports) from a listing's held-out photo, POST
+  /reports/{id}/match, confirm that source listing appears in the returned candidates; a report
+  carrying a listing's exact serial returns that listing with serial_match true, score 1.0,
+  verdict likely_same, and NO VLM call. Works with the key set; degrades (image+text only)
+  without it.
+- GET /reports/{id}/matches returns the cached result. Print files changed + the exact commands.
