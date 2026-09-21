@@ -9,3 +9,4 @@ pillow
 httpx
 numpy
 apify-client
+openai

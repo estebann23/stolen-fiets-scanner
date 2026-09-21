@@ -18,8 +18,14 @@ if not DB_PATH.is_absolute():
 API_URL = os.getenv("API_URL", "http://localhost:8000")
 CLIP_MODEL = os.getenv("CLIP_MODEL", "ViT-B-32")
 VLM_MODEL = os.getenv("VLM_MODEL", "")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+LLM_TIMEOUT_S = float(os.getenv("LLM_TIMEOUT_S", "60"))
 
 DATA_DIR = ROOT / "data"
+LLM_CACHE_DIR = Path(os.getenv("LLM_CACHE_DIR", str(DATA_DIR / "cache" / "llm")))
+if not LLM_CACHE_DIR.is_absolute():
+    LLM_CACHE_DIR = ROOT / LLM_CACHE_DIR
 RAW_LISTINGS_PATH = DATA_DIR / "raw" / "listings.jsonl"
 IMAGES_DIR = DATA_DIR / "images"
 REPORTS_DIR = DATA_DIR / "reports"
