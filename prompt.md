@@ -195,3 +195,107 @@ VERIFY BEFORE FINISHING
 - `python -m enrichment.embeddings` prints dims, the ≈1.0 self-similarity, and a top-3 where
   the source listing ranks first; a second run logs skips.
 - Print the files you created/changed and the exact run command.
+
+
+######Prompt 3 Stage 4
+
+
+CONTEXT
+Existing Python 3.11 hackathon repo; SPEC.md is the single source of truth — read §5.2
+(serial_ocr, risk_signals, run_enrichment), §6 (schema), §11 (conventions), and the
+suspicion_score warning ("shown separately, NEVER part of match score"). These already exist
+and must be reused, not modified: enrichment/llm_client.py (the ONE model helper),
+enrichment/attributes.py (enrich_listing, BikeAttributes), enrichment/embeddings.py
+(embed_listing_images, embed_description_cached). Match config.py/db.py style (from __future__
+import annotations, full type hints, small functions, __main__ smoke block). Do NOT change the
+SQLite schema.
+
+TASK
+Implement the last three enrichment modules:
+  enrichment/serial_ocr.py
+  enrichment/risk_signals.py
+  enrichment/run_enrichment.py
+plus minimal config.py plumbing.
+
+SUPPORTING EDITS (only this):
+- config.py: add RISK_WEIGHTS: dict[str, float] = {"price": 0.5, "phrases": 0.35,
+  "seller": 0.15} (tunable). No other config changes needed.
+
+enrichment/serial_ocr.py — REQUIREMENTS
+- def normalise_serial(s: str) -> str: uppercase, keep only [A-Z0-9] (strip spaces/dashes/
+  punctuation). SPEC: "uppercase, no spaces/dashes."
+- def extract_serial_from_text(description: str) -> str | None: regex anchored on Dutch/English
+  frame-number keywords ("framenummer", "frame nummer", "frame nr", "framenr", "serienummer",
+  "serial", "frame number") followed by an alphanumeric token (~6–20 chars). Return the
+  normalised match, or None. Keyword-anchored only — do NOT grab arbitrary tokens (false
+  positives).
+- def extract_serial_from_images(image_paths: list[Path]) -> str | None: build a strict-JSON
+  prompt ({"serial": string|null}) and call llm_client.call_vlm_json to read any frame/serial
+  number visible in the photos. Validate the shape, normalise, return None on null/failure.
+  (Reuses llm_client's disk cache, so re-runs never re-pay.)
+- def extract_serial(image_paths: list[Path], description: str) -> str | None: text first;
+  if None, try images. Generic inputs so listings AND reports can reuse it.
+- def enrich_listing_serial(conn, listing_id: str, *, force: bool = False) -> str | None:
+  if listing_attributes.serial_found is already non-null and not force, skip the VLM call and
+  return it. Else fetch the listing's description + image paths from the DB, run extract_serial,
+  and UPDATE ONLY the serial_found column of listing_attributes (create the row if missing;
+  never clobber brand/model/etc.). Log skip/done with the id.
+
+enrichment/risk_signals.py — REQUIREMENTS  (pure/local, NO model calls)
+- SUSPICION_PHRASES constant (documented): "zonder papieren", "geen bon", "geen sleutel",
+  "snel weg", "moet weg" (case-insensitive substring match on title+description).
+- def build_price_medians(conn) -> dict[str | None, float]: median listing price grouped by
+  listing_attributes.bike_type; also store a "__global__" median. Listings whose bike_type is
+  null fall back to the global median at scoring time.
+- def compute_suspicion(listing: dict, bike_type: str | None, medians: dict,
+                        seller_listing_count: int) -> tuple[float, list[str]]:
+  Combine three signals into [0,1] using config.RISK_WEIGHTS, and return (score, reasons):
+    * price: how far below the group median (e.g. clamp(1 - price/median, 0, 1); 0 if price
+      >= median or median missing).
+    * phrases: fraction/any of SUSPICION_PHRASES present -> 0..1.
+    * seller: proxy for "new/low-activity seller" — seller_id appearing only once in the
+      dataset scores mildly higher; document that this is a proxy (no real seller history in
+      the data). 
+  Clamp final to [0,1]. reasons is a short human-readable list (for later display), NOT fed
+  into matching.
+- def enrich_all_risk(conn) -> int: compute medians + per-seller listing counts once, then for
+  every listing compute suspicion and UPDATE listings.suspicion_score. Return count updated.
+  Recompute is cheap and deterministic; overwriting is fine.
+- Add a module-level comment: suspicion_score is displayed SEPARATELY and is never part of the
+  match score (SPEC hard rule).
+
+enrichment/run_enrichment.py — REQUIREMENTS (idempotent, resumable batch driver; SPEC §5.2/§11)
+- main pass over every listing id in the DB:
+    Pass 1 (per listing, each step already idempotent/cached — call them and count
+    processed/skipped/failed): attributes.enrich_listing → embeddings.embed_listing_images +
+    embeddings.embed_description_cached → serial_ocr.enrich_listing_serial. Wrap each listing
+    in try/except: on error, log the id + error and CONTINUE (resumable — a re-run picks up
+    where it left off). Log progress every 25 listings with running counts.
+    Pass 2 (dataset-level, after attributes exist): risk_signals.enrich_all_risk(conn).
+- CLI (argparse): --force (re-do even if present), --limit N (first N listings, for quick
+  demos), --only {attributes,embeddings,serial,risk} (run a single step). Default: all.
+- __main__: run the batch; print a final summary table (per step: done / skipped / failed) and
+  total wall-clock time.
+
+HARD RULES (SPEC §11)
+- Idempotent & resumable everywhere; skip already-done work unless --force; log counts.
+- All model calls go through llm_client (serial image OCR only); risk_signals makes NO model
+  calls. Cache is already handled by the reused modules — never re-pay.
+- suspicion_score stays OUT of any match/score path. Typed everywhere. No secrets, no scraping.
+  Do NOT alter the schema.
+
+OUT OF SCOPE — do NOT create or edit: llm_client.py, attributes.py, embeddings.py, anything
+under matching/, api/, app/, eval/, db.py, or the schema.
+
+VERIFY BEFORE FINISHING
+- `python -c "import enrichment.serial_ocr, enrichment.risk_signals, enrichment.run_enrichment"`
+  imports cleanly.
+- normalise_serial("gz 1234-5678") == "GZ12345678"; extract_serial_from_text on a demo
+  description containing "Framenummer GZ12345678." returns "GZ12345678"; on a description with
+  no serial returns None.
+- compute_suspicion returns 0.0-ish for a normal listing and a higher score for one priced far
+  below median containing "geen bon"; result is always within [0,1].
+- `python -m enrichment.run_enrichment --limit 5` runs end-to-end and prints the summary table;
+  a second `--limit 5` run shows mostly skips (idempotent). (Needs OPENROUTER_API_KEY set for
+  the attribute/serial VLM calls; embeddings/risk run without a key.)
+- Print the files you created/changed and the exact run command.
