@@ -25,22 +25,20 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-## Dataset (offline)
+## Dataset (one-time)
 
-Marktplaats listings are **not scraped**. Their terms and robots.txt forbid copying the ad database and using `/lrp/api/search`. The official API needs partner OAuth credentials.
+Listings come from a **single** Apify run of `haketa/marktplaats-scraper` (token in `.env.local`, never committed): fietsen around Maastricht (postcode `6211`), 25 km, 200–500 ads.
 
 ```bash
-python collector/collect.py
+python collector/collect.py --source apify
 ```
 
-This builds ~250 filtered demo listings (placeholder photos), writes `data/raw/listings.jsonl`, and loads `data/bike.db`. To use a manual JSONL dump you already have:
+That writes `data/raw/listings.jsonl`, downloads photos, and loads `data/bike.db`. Demo corpus / JSONL import still work:
 
 ```bash
+python collector/collect.py --source demo
 python collector/collect.py --import-jsonl path/to/dump.jsonl
-```
-
-```bash
-python db.py   # schema only / re-import jsonl
+python db.py
 ```
 
 ## API

@@ -148,6 +148,22 @@ def upsert_listing(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
         )
 
 
+def replace_listings_from_jsonl(jsonl_path: Path | None = None) -> int:
+    """Drop existing listing rows, then import JSONL (one-time scrape replace)."""
+    path = jsonl_path or RAW_LISTINGS_PATH
+    conn = connect()
+    try:
+        init_schema(conn)
+        conn.execute("DELETE FROM matches")
+        conn.execute("DELETE FROM listing_images")
+        conn.execute("DELETE FROM listing_attributes")
+        conn.execute("DELETE FROM listings")
+        conn.commit()
+        return import_listings_jsonl(path, conn)
+    finally:
+        conn.close()
+
+
 def import_listings_jsonl(
     jsonl_path: Path | None = None,
     conn: sqlite3.Connection | None = None,

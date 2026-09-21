@@ -1,5 +1,4 @@
-# Targeted search plan (not a live Marktplaats crawl).
-# Used to shape the local demo corpus / any permitted manual import.
+# Targeted search plan for the one-time Apify Marktplaats scrape.
 
 brands:
   - Gazelle
@@ -21,10 +20,15 @@ types:
 
 region:
   name: Maastricht
-  radius_km: 30
+  postcode: "6211"
+  radius_km: 25
 
+# Market filter is listing count (200–500), not a €200–€500 price cap.
 price_bands:
-  min_eur: 100
-  max_eur: 500
+  min_eur: null
+  max_eur: null
 
-max_listings: 250
+query: fiets
+category_id: "1655"  # Fietsen en Brommers
+max_listings: 300
+platform: marktplaats.nl

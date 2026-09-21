@@ -1,0 +1,19 @@
+{
+  "run_id": "anAmXvNcIWOEr5BJQ",
+  "dataset_id": "9UHdvR0NIicyVbdAn",
+  "status": "SUCCEEDED",
+  "item_count": 300,
+  "finished_at": "2026-09-21T12:30:25+00:00",
+  "input": {
+    "platform": "marktplaats.nl",
+    "query": "fiets",
+    "categoryId": "1655",
+    "postcode": "6211",
+    "distanceMeters": 25000,
+    "sortBy": "SORT_INDEX",
+    "sortOrder": "DECREASING",
+    "scrapeDetails": true,
+    "maxListings": 300,
+    "requestDelay": 500
+  }
+}

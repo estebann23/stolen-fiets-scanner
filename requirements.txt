@@ -8,3 +8,4 @@ pyyaml
 pillow
 httpx
 numpy
+apify-client
