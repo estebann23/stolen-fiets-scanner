@@ -68,3 +68,5 @@ RISK_WEIGHTS: dict[str, float] = {
     "phrases": 0.35,
     "seller": 0.15,
 }
+VERIFY_TOP_K = 10
+RESULT_TOP_K = 5

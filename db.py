@@ -300,6 +300,79 @@ def fetch_report(report_id: str) -> dict[str, Any] | None:
         conn.close()
 
 
+def upsert_match(conn: sqlite3.Connection, match: dict[str, Any]) -> None:
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO matches (
+          report_id, listing_id, score, serial_match, verdict, reasons, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            match["report_id"],
+            match["listing_id"],
+            match.get("score"),
+            match.get("serial_match"),
+            match.get("verdict"),
+            match.get("reasons"),
+            match.get("created_at"),
+        ),
+    )
+
+
+def fetch_matches(report_id: str) -> list[dict[str, Any]]:
+    conn = connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT * FROM matches
+            WHERE report_id = ?
+            ORDER BY serial_match DESC,
+              CASE verdict
+                WHEN 'likely_same' THEN 0
+                WHEN 'possibly_same' THEN 1
+                WHEN 'different' THEN 3
+                ELSE 2
+              END,
+              score DESC,
+              listing_id ASC
+            """,
+            (report_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def fetch_listings_for_matching(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Listing rows joined with attributes, photo paths, and clip blobs."""
+    attr_rows = {
+        row["listing_id"]: _attributes_dict(row)
+        for row in conn.execute("SELECT * FROM listing_attributes")
+    }
+    image_paths: dict[str, list[str]] = {}
+    image_blobs: dict[str, list[bytes]] = {}
+    for row in conn.execute(
+        "SELECT listing_id, path, clip_vec FROM listing_images ORDER BY id"
+    ):
+        listing_id = str(row["listing_id"])
+        image_paths.setdefault(listing_id, []).append(str(row["path"]))
+        blob = row["clip_vec"]
+        if blob:
+            image_blobs.setdefault(listing_id, []).append(bytes(blob))
+    listings: list[dict[str, Any]] = []
+    for row in conn.execute("SELECT * FROM listings"):
+        listing_id = str(row["id"])
+        attrs = attr_rows.get(listing_id) or {}
+        payload = dict(row)
+        payload["attributes"] = attrs
+        payload["serial_found"] = attrs.get("serial_found")
+        payload["is_electric"] = attrs.get("is_electric")
+        payload["image_paths"] = image_paths.get(listing_id, [])
+        payload["image_blobs"] = image_blobs.get(listing_id, [])
+        listings.append(payload)
+    return listings
+
+
 def main() -> None:
     init_schema()
     imported = 0
