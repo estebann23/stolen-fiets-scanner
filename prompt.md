@@ -299,3 +299,88 @@ VERIFY BEFORE FINISHING
   a second `--limit 5` run shows mostly skips (idempotent). (Needs OPENROUTER_API_KEY set for
   the attribute/serial VLM calls; embeddings/risk run without a key.)
 - Print the files you created/changed and the exact run command.
+
+
+
+#### Prompt 4 Stage 5 
+
+CONTEXT
+Existing Python 3.11 hackathon repo; SPEC.md is the single source of truth — read §6 (schema),
+§7.1 (report intake fields), §8 (API), §11 (conventions). These exist and must be reused:
+api/main.py (app + /health), api/routes/listings.py (GET /listings/{id}), api/schemas.py
+(ReportCreated, MatchResponse), api/routes/reports.py (currently 501 stubs), db.py (connect,
+init_schema, fetch_listing), enrichment/embeddings.py (embed_report_images,
+embed_description_cached), enrichment/attributes.py (extract_attributes, BikeAttributes),
+config.py (REPORTS_DIR). Match config.py/db.py style (from __future__ import annotations, full
+type hints, small functions). Do NOT change the SQLite schema.
+
+TASK
+Implement POST /reports (multipart photo upload + report enrichment through the SAME embeddings
+and attributes code as listings). Leave POST /reports/{id}/match and GET /reports/{id}/matches
+as their existing 501 stubs (matching is a later step).
+
+SUPPORTING EDITS
+- db.py: add report DB helpers (schema unchanged):
+    def insert_report(conn, report: dict) -> None      # INSERT into reports (all §6 columns)
+    def add_report_image(conn, report_id: str, path: str) -> int   # INSERT report_images,
+                                                                    # return new id
+    def fetch_report(report_id: str) -> dict | None    # report row + its image paths
+- api/routes/reports.py: implement POST /reports (below); keep the two match routes as 501.
+- (No schema changes; no new tables.)
+
+POST /reports — REQUIREMENTS
+- Signature uses FastAPI Form + File (multipart), all typed:
+    photos: list[UploadFile] = File(...)              # 1–5, REQUIRED
+    stolen_at: str = Form(...)                         # ISO date/datetime, REQUIRED
+    location: str | None = Form(None)                  # city name (resolved via gazetteer)
+    stolen_lat: float | None = Form(None)              # optional explicit coords
+    stolen_lon: float | None = Form(None)
+    serial: str | None = Form(None)
+    brand: str | None = Form(None)
+    color: str | None = Form(None)
+    police_report_nr: str | None = Form(None)
+    notes: str | None = Form(None)
+- VALIDATION: 0 photos or >5 photos -> HTTP 422 with a clear message. Missing stolen_at -> 422.
+  Accept only image content types / suffixes (jpg/jpeg/png/webp); reject others with 422.
+- report_id: f"r_{uuid4().hex[:8]}".
+- LOCATION -> COORDS: if stolen_lat and stolen_lon are both provided, use them. Else if
+  location is given, resolve via a small OFFLINE gazetteer (a module-level dict[str,(lat,lon)],
+  case-insensitive) — include at least the demo-region cities used in collector/demo_corpus.py
+  (Maastricht, Valkenburg, Meerssen, Heerlen, Sittard, Roermond, Genk, Hasselt, Liège, Aachen,
+  Tongeren, Bilzen) plus common NL cities (Amsterdam, Rotterdam, Den Haag, Utrecht, Eindhoven,
+  Delft, Groningen, Nijmegen, Maastricht). Unknown/absent -> store null lat/lon (don't 422).
+  Add a comment that this is a hackathon stand-in for a real geocoder (kept offline on purpose).
+- SAVE PHOTOS: to REPORTS_DIR/<report_id>/<i>.jpg. Re-encode each upload with Pillow to RGB
+  JPEG (this normalizes format and strips EXIF/GPS — privacy). Store DB paths as posix relative
+  paths ("data/reports/<id>/<i>.jpg") to match how listing image paths are stored.
+- PERSIST: insert_report(...) with created_at = now (UTC, isoformat, seconds), stolen_at
+  normalized to isoformat, resolved lat/lon, and the form fields; then add_report_image for
+  each saved photo.
+- ENRICH (same pipeline as listings):
+    * embeddings.embed_report_images(conn, report_id)  -> persists clip_vec per photo (local,
+      always runs, no API key needed).
+    * build a report "description" string from brand/color/notes (skip Nones) and call
+      embeddings.embed_description_cached(report_id, description) -> disk-cached text vector.
+    * BEST-EFFORT attribute warming: call attributes.extract_attributes(image_paths,
+      description) inside try/except; log confidence on success, log-and-continue on any error
+      (e.g. no OPENROUTER_API_KEY). Do NOT fail the request if this step errors — embeddings
+      already persisted. (The matcher will re-derive report attributes from the llm_client
+      cache later.)
+- RESPONSE: return ReportCreated(report_id=report_id) (HTTP 200/201).
+
+HARD RULES (SPEC §11)
+- Typed everywhere; Pydantic for I/O; small functions. Same enrichment code for reports and
+  listings (SPEC §7.1). No secrets, no scraping, no external network at intake beyond the
+  reused modules' local work. Do NOT alter the schema. suspicion_score is untouched here.
+
+OUT OF SCOPE — do NOT create or edit: matching/, app/, eval/, enrichment/* modules, the schema,
+or the two match routes (leave them 501).
+
+VERIFY BEFORE FINISHING
+- `python -c "import api.main"` imports cleanly; `uvicorn api.main:app` starts.
+- POST /reports with 2 small JPEGs + stolen_at + location "Maastricht" returns a report_id;
+  the reports row exists with resolved lat/lon, 2 report_images rows exist, and each has a
+  non-null clip_vec (verify via a quick sqlite query). Works WITHOUT an API key set.
+- POST /reports with 0 photos -> 422; with 6 photos -> 422; with a .txt "photo" -> 422.
+- Provide the exact curl command (multipart -F) used to test, and print the files created/
+  changed.
