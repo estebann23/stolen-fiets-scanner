@@ -195,3 +195,192 @@ VERIFY BEFORE FINISHING
 - `python -m enrichment.embeddings` prints dims, the ≈1.0 self-similarity, and a top-3 where
   the source listing ranks first; a second run logs skips.
 - Print the files you created/changed and the exact run command.
+
+
+######Prompt 3 Stage 4
+
+
+CONTEXT
+Existing Python 3.11 hackathon repo; SPEC.md is the single source of truth — read §5.2
+(serial_ocr, risk_signals, run_enrichment), §6 (schema), §11 (conventions), and the
+suspicion_score warning ("shown separately, NEVER part of match score"). These already exist
+and must be reused, not modified: enrichment/llm_client.py (the ONE model helper),
+enrichment/attributes.py (enrich_listing, BikeAttributes), enrichment/embeddings.py
+(embed_listing_images, embed_description_cached). Match config.py/db.py style (from __future__
+import annotations, full type hints, small functions, __main__ smoke block). Do NOT change the
+SQLite schema.
+
+TASK
+Implement the last three enrichment modules:
+  enrichment/serial_ocr.py
+  enrichment/risk_signals.py
+  enrichment/run_enrichment.py
+plus minimal config.py plumbing.
+
+SUPPORTING EDITS (only this):
+- config.py: add RISK_WEIGHTS: dict[str, float] = {"price": 0.5, "phrases": 0.35,
+  "seller": 0.15} (tunable). No other config changes needed.
+
+enrichment/serial_ocr.py — REQUIREMENTS
+- def normalise_serial(s: str) -> str: uppercase, keep only [A-Z0-9] (strip spaces/dashes/
+  punctuation). SPEC: "uppercase, no spaces/dashes."
+- def extract_serial_from_text(description: str) -> str | None: regex anchored on Dutch/English
+  frame-number keywords ("framenummer", "frame nummer", "frame nr", "framenr", "serienummer",
+  "serial", "frame number") followed by an alphanumeric token (~6–20 chars). Return the
+  normalised match, or None. Keyword-anchored only — do NOT grab arbitrary tokens (false
+  positives).
+- def extract_serial_from_images(image_paths: list[Path]) -> str | None: build a strict-JSON
+  prompt ({"serial": string|null}) and call llm_client.call_vlm_json to read any frame/serial
+  number visible in the photos. Validate the shape, normalise, return None on null/failure.
+  (Reuses llm_client's disk cache, so re-runs never re-pay.)
+- def extract_serial(image_paths: list[Path], description: str) -> str | None: text first;
+  if None, try images. Generic inputs so listings AND reports can reuse it.
+- def enrich_listing_serial(conn, listing_id: str, *, force: bool = False) -> str | None:
+  if listing_attributes.serial_found is already non-null and not force, skip the VLM call and
+  return it. Else fetch the listing's description + image paths from the DB, run extract_serial,
+  and UPDATE ONLY the serial_found column of listing_attributes (create the row if missing;
+  never clobber brand/model/etc.). Log skip/done with the id.
+
+enrichment/risk_signals.py — REQUIREMENTS  (pure/local, NO model calls)
+- SUSPICION_PHRASES constant (documented): "zonder papieren", "geen bon", "geen sleutel",
+  "snel weg", "moet weg" (case-insensitive substring match on title+description).
+- def build_price_medians(conn) -> dict[str | None, float]: median listing price grouped by
+  listing_attributes.bike_type; also store a "__global__" median. Listings whose bike_type is
+  null fall back to the global median at scoring time.
+- def compute_suspicion(listing: dict, bike_type: str | None, medians: dict,
+                        seller_listing_count: int) -> tuple[float, list[str]]:
+  Combine three signals into [0,1] using config.RISK_WEIGHTS, and return (score, reasons):
+    * price: how far below the group median (e.g. clamp(1 - price/median, 0, 1); 0 if price
+      >= median or median missing).
+    * phrases: fraction/any of SUSPICION_PHRASES present -> 0..1.
+    * seller: proxy for "new/low-activity seller" — seller_id appearing only once in the
+      dataset scores mildly higher; document that this is a proxy (no real seller history in
+      the data). 
+  Clamp final to [0,1]. reasons is a short human-readable list (for later display), NOT fed
+  into matching.
+- def enrich_all_risk(conn) -> int: compute medians + per-seller listing counts once, then for
+  every listing compute suspicion and UPDATE listings.suspicion_score. Return count updated.
+  Recompute is cheap and deterministic; overwriting is fine.
+- Add a module-level comment: suspicion_score is displayed SEPARATELY and is never part of the
+  match score (SPEC hard rule).
+
+enrichment/run_enrichment.py — REQUIREMENTS (idempotent, resumable batch driver; SPEC §5.2/§11)
+- main pass over every listing id in the DB:
+    Pass 1 (per listing, each step already idempotent/cached — call them and count
+    processed/skipped/failed): attributes.enrich_listing → embeddings.embed_listing_images +
+    embeddings.embed_description_cached → serial_ocr.enrich_listing_serial. Wrap each listing
+    in try/except: on error, log the id + error and CONTINUE (resumable — a re-run picks up
+    where it left off). Log progress every 25 listings with running counts.
+    Pass 2 (dataset-level, after attributes exist): risk_signals.enrich_all_risk(conn).
+- CLI (argparse): --force (re-do even if present), --limit N (first N listings, for quick
+  demos), --only {attributes,embeddings,serial,risk} (run a single step). Default: all.
+- __main__: run the batch; print a final summary table (per step: done / skipped / failed) and
+  total wall-clock time.
+
+HARD RULES (SPEC §11)
+- Idempotent & resumable everywhere; skip already-done work unless --force; log counts.
+- All model calls go through llm_client (serial image OCR only); risk_signals makes NO model
+  calls. Cache is already handled by the reused modules — never re-pay.
+- suspicion_score stays OUT of any match/score path. Typed everywhere. No secrets, no scraping.
+  Do NOT alter the schema.
+
+OUT OF SCOPE — do NOT create or edit: llm_client.py, attributes.py, embeddings.py, anything
+under matching/, api/, app/, eval/, db.py, or the schema.
+
+VERIFY BEFORE FINISHING
+- `python -c "import enrichment.serial_ocr, enrichment.risk_signals, enrichment.run_enrichment"`
+  imports cleanly.
+- normalise_serial("gz 1234-5678") == "GZ12345678"; extract_serial_from_text on a demo
+  description containing "Framenummer GZ12345678." returns "GZ12345678"; on a description with
+  no serial returns None.
+- compute_suspicion returns 0.0-ish for a normal listing and a higher score for one priced far
+  below median containing "geen bon"; result is always within [0,1].
+- `python -m enrichment.run_enrichment --limit 5` runs end-to-end and prints the summary table;
+  a second `--limit 5` run shows mostly skips (idempotent). (Needs OPENROUTER_API_KEY set for
+  the attribute/serial VLM calls; embeddings/risk run without a key.)
+- Print the files you created/changed and the exact run command.
+
+
+
+#### Prompt 4 Stage 5 
+
+CONTEXT
+Existing Python 3.11 hackathon repo; SPEC.md is the single source of truth — read §6 (schema),
+§7.1 (report intake fields), §8 (API), §11 (conventions). These exist and must be reused:
+api/main.py (app + /health), api/routes/listings.py (GET /listings/{id}), api/schemas.py
+(ReportCreated, MatchResponse), api/routes/reports.py (currently 501 stubs), db.py (connect,
+init_schema, fetch_listing), enrichment/embeddings.py (embed_report_images,
+embed_description_cached), enrichment/attributes.py (extract_attributes, BikeAttributes),
+config.py (REPORTS_DIR). Match config.py/db.py style (from __future__ import annotations, full
+type hints, small functions). Do NOT change the SQLite schema.
+
+TASK
+Implement POST /reports (multipart photo upload + report enrichment through the SAME embeddings
+and attributes code as listings). Leave POST /reports/{id}/match and GET /reports/{id}/matches
+as their existing 501 stubs (matching is a later step).
+
+SUPPORTING EDITS
+- db.py: add report DB helpers (schema unchanged):
+    def insert_report(conn, report: dict) -> None      # INSERT into reports (all §6 columns)
+    def add_report_image(conn, report_id: str, path: str) -> int   # INSERT report_images,
+                                                                    # return new id
+    def fetch_report(report_id: str) -> dict | None    # report row + its image paths
+- api/routes/reports.py: implement POST /reports (below); keep the two match routes as 501.
+- (No schema changes; no new tables.)
+
+POST /reports — REQUIREMENTS
+- Signature uses FastAPI Form + File (multipart), all typed:
+    photos: list[UploadFile] = File(...)              # 1–5, REQUIRED
+    stolen_at: str = Form(...)                         # ISO date/datetime, REQUIRED
+    location: str | None = Form(None)                  # city name (resolved via gazetteer)
+    stolen_lat: float | None = Form(None)              # optional explicit coords
+    stolen_lon: float | None = Form(None)
+    serial: str | None = Form(None)
+    brand: str | None = Form(None)
+    color: str | None = Form(None)
+    police_report_nr: str | None = Form(None)
+    notes: str | None = Form(None)
+- VALIDATION: 0 photos or >5 photos -> HTTP 422 with a clear message. Missing stolen_at -> 422.
+  Accept only image content types / suffixes (jpg/jpeg/png/webp); reject others with 422.
+- report_id: f"r_{uuid4().hex[:8]}".
+- LOCATION -> COORDS: if stolen_lat and stolen_lon are both provided, use them. Else if
+  location is given, resolve via a small OFFLINE gazetteer (a module-level dict[str,(lat,lon)],
+  case-insensitive) — include at least the demo-region cities used in collector/demo_corpus.py
+  (Maastricht, Valkenburg, Meerssen, Heerlen, Sittard, Roermond, Genk, Hasselt, Liège, Aachen,
+  Tongeren, Bilzen) plus common NL cities (Amsterdam, Rotterdam, Den Haag, Utrecht, Eindhoven,
+  Delft, Groningen, Nijmegen, Maastricht). Unknown/absent -> store null lat/lon (don't 422).
+  Add a comment that this is a hackathon stand-in for a real geocoder (kept offline on purpose).
+- SAVE PHOTOS: to REPORTS_DIR/<report_id>/<i>.jpg. Re-encode each upload with Pillow to RGB
+  JPEG (this normalizes format and strips EXIF/GPS — privacy). Store DB paths as posix relative
+  paths ("data/reports/<id>/<i>.jpg") to match how listing image paths are stored.
+- PERSIST: insert_report(...) with created_at = now (UTC, isoformat, seconds), stolen_at
+  normalized to isoformat, resolved lat/lon, and the form fields; then add_report_image for
+  each saved photo.
+- ENRICH (same pipeline as listings):
+    * embeddings.embed_report_images(conn, report_id)  -> persists clip_vec per photo (local,
+      always runs, no API key needed).
+    * build a report "description" string from brand/color/notes (skip Nones) and call
+      embeddings.embed_description_cached(report_id, description) -> disk-cached text vector.
+    * BEST-EFFORT attribute warming: call attributes.extract_attributes(image_paths,
+      description) inside try/except; log confidence on success, log-and-continue on any error
+      (e.g. no OPENROUTER_API_KEY). Do NOT fail the request if this step errors — embeddings
+      already persisted. (The matcher will re-derive report attributes from the llm_client
+      cache later.)
+- RESPONSE: return ReportCreated(report_id=report_id) (HTTP 200/201).
+
+HARD RULES (SPEC §11)
+- Typed everywhere; Pydantic for I/O; small functions. Same enrichment code for reports and
+  listings (SPEC §7.1). No secrets, no scraping, no external network at intake beyond the
+  reused modules' local work. Do NOT alter the schema. suspicion_score is untouched here.
+
+OUT OF SCOPE — do NOT create or edit: matching/, app/, eval/, enrichment/* modules, the schema,
+or the two match routes (leave them 501).
+
+VERIFY BEFORE FINISHING
+- `python -c "import api.main"` imports cleanly; `uvicorn api.main:app` starts.
+- POST /reports with 2 small JPEGs + stolen_at + location "Maastricht" returns a report_id;
+  the reports row exists with resolved lat/lon, 2 report_images rows exist, and each has a
+  non-null clip_vec (verify via a quick sqlite query). Works WITHOUT an API key set.
+- POST /reports with 0 photos -> 422; with 6 photos -> 422; with a .txt "photo" -> 422.
+- Provide the exact curl command (multipart -F) used to test, and print the files created/
+  changed.
