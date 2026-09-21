@@ -9,18 +9,18 @@ from typing import Any
 
 # Public city coordinates (approx. centroids), used for distance filters later.
 CITIES: list[tuple[str, float, float]] = [
-    ("Amsterdam", 52.3676, 4.9041),
-    ("Haarlem", 52.3874, 4.6462),
-    ("Almere", 52.3508, 5.2647),
-    ("Utrecht", 52.0907, 5.1214),
-    ("Amersfoort", 52.1561, 5.3878),
-    ("Leiden", 52.1601, 4.4970),
-    ("Den Haag", 52.0705, 4.3007),
-    ("Delft", 52.0116, 4.3571),
-    ("Rotterdam", 51.9244, 4.4777),
-    ("Zaandam", 52.4389, 4.8250),
-    ("Hilversum", 52.2292, 5.1669),
-    ("Purmerend", 52.5050, 4.9597),
+    ("Maastricht", 50.8483, 5.6886),
+    ("Valkenburg", 50.8658, 5.8322),
+    ("Meerssen", 50.8892, 5.7382),
+    ("Heerlen", 50.8870, 5.9795),
+    ("Sittard", 51.0000, 5.8667),
+    ("Roermond", 51.1942, 5.9870),
+    ("Genk", 50.9650, 5.5000),
+    ("Hasselt", 50.9307, 5.3374),
+    ("Liège", 50.6333, 5.5667),
+    ("Aachen", 50.7753, 6.0839),
+    ("Tongeren", 50.7806, 5.4647),
+    ("Bilzen", 50.8736, 5.5189),
 ]
 
 BRAND_MODELS: dict[str, list[str]] = {

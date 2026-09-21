@@ -245,16 +245,3 @@ export function mapApifyItemToListing(raw: any): MarketplaceListing {
 }
 
 ```
-
----
-
-## 6. Jury Defense & Architecture Alignment
-
-When demonstrating or explaining the Apify integration to the panel:
-
-* **For Prof. Dr. Anna Wilbik (Data Fusion & Robustness):**
-> *"Live scraping in production introduces external network variance and varying schema densities. Our ingestion layer uses Apify for continuous web polling, but decouples ingestion from decision logic: raw crawled payloads are normalized via our canonical taxonomy mapper into uniform feature vectors before entering the multi-source fusion engine."*
-
-
-* **For Jean-Maurice Henkel (Unit Economics & Feasibility):**
-> *"Real-time scraping of thousands of high-resolution images during an active user query is computationally inefficient. We utilize a tiered model: Apify continuously ingests low-bandwidth metadata into an indexed dataset cache, and heavy visual forensic inference is triggered exclusively when high-probability candidates pass initial price and geographic filters."*
