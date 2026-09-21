@@ -1,5 +1,5 @@
-# Targeted Marktplaats searches (not a broad crawl).
-# Brands, types, region, and price bands from SPEC.md §5.1.
+# Targeted search plan (not a live Marktplaats crawl).
+# Used to shape the local demo corpus / any permitted manual import.
 
 brands:
   - Gazelle
@@ -20,12 +20,11 @@ types:
   - mountainbike
 
 region:
-  # TODO: set demo region
-  name: ""
+  name: Amsterdam
   radius_km: 50
 
 price_bands:
-  min_eur: null
-  max_eur: null
+  min_eur: 100
+  max_eur: 5500
 
 max_listings: 250
