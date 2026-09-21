@@ -15,16 +15,18 @@ In another terminal:
 
 ```bash
 cd frontend
-cp .env.local.example .env.local   # optional; default is already http://localhost:8000
+cp .env.local.example .env.local   # optional
 npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). Submit a report on `/`; after
-matching, you land on `/reports/{id}` (refresh uses `GET /reports/{id}/matches`).
+Open [http://localhost:3000](http://localhost:3000). The browser talks to
+same-origin `/backend/*`, which Next.js proxies to FastAPI at
+`http://127.0.0.1:8000`. Submit a report on `/`; after matching, you land on
+`/reports/{id}` (refresh uses `GET /reports/{id}/matches`).
 
-Photos render from `${NEXT_PUBLIC_API_URL}/data/...` (FastAPI serves the repo
-`data/` directory read-only).
+Photos render from `/backend/data/...` (FastAPI serves the repo `data/`
+directory read-only).
 
 ## Scripts
 
