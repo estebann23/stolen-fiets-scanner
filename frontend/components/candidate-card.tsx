@@ -12,11 +12,9 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { Progress } from "@/components/ui/progress"
 import { Separator } from "@/components/ui/separator"
 import type { Candidate } from "@/lib/api"
 import { imgUrl } from "@/lib/api"
-import { formatPercent, scoreToPercent } from "@/lib/format"
 
 type CandidateCardProps = {
   candidate: Candidate
@@ -24,7 +22,6 @@ type CandidateCardProps = {
 }
 
 export function CandidateCard({ candidate, rank }: CandidateCardProps) {
-  const matchPercent = scoreToPercent(candidate.score) ?? 0
   const reportSrc = imgUrl(candidate.report_image)
   const listingSrc = imgUrl(candidate.listing_image)
 
@@ -48,23 +45,6 @@ export function CandidateCard({ candidate, rank }: CandidateCardProps) {
           listingSrc={listingSrc}
           listingId={candidate.listing_id}
         />
-
-        <div className="grid gap-2">
-          <div className="flex items-baseline justify-between gap-3">
-            <span className="text-sm font-medium">Match score</span>
-            <span className="font-heading text-sm font-semibold tabular-nums text-primary">
-              {formatPercent(candidate.score)}
-            </span>
-          </div>
-          <Progress
-            value={matchPercent}
-            className="h-2 bg-primary/10"
-            aria-label="Match score"
-          />
-          <p className="text-xs text-muted-foreground">
-            Visual and attribute agreement only. Not a finding of theft.
-          </p>
-        </div>
 
         {candidate.reasons.length > 0 && (
           <div>

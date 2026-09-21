@@ -2,20 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
-from matching.filters import haversine_km
+from matching.filters import haversine_km, parse_timestamp
 from matching.verifier import Verdict
-
-
-def _parse_dt(raw: Any) -> datetime | None:
-    if raw is None or raw == "":
-        return None
-    try:
-        return datetime.fromisoformat(str(raw).strip().replace("Z", "+00:00").split("+")[0])
-    except ValueError:
-        return None
 
 
 def _norm(value: Any) -> str | None:
@@ -73,8 +63,8 @@ def explain(
             if item and item not in reasons:
                 reasons.append(str(item))
 
-    stolen_at = _parse_dt(report.get("stolen_at"))
-    posted_at = _parse_dt(listing.get("posted_at"))
+    stolen_at = parse_timestamp(report.get("stolen_at"))
+    posted_at = parse_timestamp(listing.get("posted_at"))
     geo_bits: list[str] = []
     if stolen_at is not None and posted_at is not None:
         delta_days = (posted_at - stolen_at).days

@@ -332,6 +332,9 @@ def _run_match_pipeline(report_id: str) -> MatchResponse:
         created_at = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(
             timespec="seconds"
         )
+        # Re-running the matcher replaces the cached top-K; stale rows from an
+        # earlier corpus must not linger in GET /reports/{id}/matches.
+        conn.execute("DELETE FROM matches WHERE report_id = ?", (report_id,))
         candidates: list[MatchCandidate] = []
         for item in top:
             listing = item["listing"]

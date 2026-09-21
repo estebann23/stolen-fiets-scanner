@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from config import ROOT
 from enrichment.llm_client import call_vlm_json
 
 VerdictLabel = Literal["likely_same", "possibly_same", "different"]
@@ -52,12 +53,19 @@ class Verdict(BaseModel):
         return []
 
 
+def _resolve(raw: Path | str) -> Path:
+    """DB photo paths are posix and relative to the repo root, not to os.getcwd()."""
+    path = Path(raw)
+    return path if path.is_absolute() else ROOT / path
+
+
 def verify_pair(
     report_image_paths: list[Path],
     listing_image_paths: list[Path],
 ) -> Verdict | None:
-    paths = [Path(p) for p in report_image_paths[:3] if Path(p).is_file()]
-    paths += [Path(p) for p in listing_image_paths[:3] if Path(p).is_file()]
+    candidates = [_resolve(p) for p in report_image_paths[:3]]
+    candidates += [_resolve(p) for p in listing_image_paths[:3]]
+    paths = [path for path in candidates if path.is_file()]
     if not paths:
         return None
     try:

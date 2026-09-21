@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from enrichment.serial_ocr import normalise_serial
@@ -35,16 +35,24 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * radius_km * math.asin(min(1.0, math.sqrt(a)))
 
 
-def _parse_dt(raw: Any) -> datetime | None:
+def parse_timestamp(raw: Any) -> datetime | None:
+    """ISO date/datetime → UTC-naive datetime, matching how reports are stored.
+
+    Returns None for Marktplaats relative labels ("Vandaag"), which callers
+    must treat as unknown rather than as a mismatch.
+    """
     if raw is None or raw == "":
         return None
     text = str(raw).strip()
     if not text:
         return None
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00").split("+")[0])
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
 
 
 def _as_bool(value: Any) -> bool | None:
@@ -77,7 +85,7 @@ def apply_filters(
         if serial_matches(report_serial, listing_serial):
             serial_hit_ids.add(str(listing["id"]))
 
-    stolen_at = _parse_dt(report.get("stolen_at"))
+    stolen_at = parse_timestamp(report.get("stolen_at"))
     report_lat = report.get("stolen_lat")
     report_lon = report.get("stolen_lon")
     report_electric = _as_bool(report.get("is_electric"))
@@ -89,7 +97,7 @@ def apply_filters(
             kept.append(listing)
             continue
 
-        posted_at = _parse_dt(listing.get("posted_at"))
+        posted_at = parse_timestamp(listing.get("posted_at"))
         if stolen_at is not None and posted_at is not None and posted_at < stolen_at:
             continue
 

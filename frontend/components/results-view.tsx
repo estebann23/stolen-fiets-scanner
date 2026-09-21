@@ -22,11 +22,14 @@ import {
 } from "@/lib/api"
 import { loadReportSummary } from "@/lib/report-summary"
 
+/** The risk signal is the deciding factor; listings without one rank last. */
 function orderCandidates(candidates: Candidate[]): Candidate[] {
   return [...candidates]
     .sort((a, b) => {
-      if (a.serial_match !== b.serial_match) return a.serial_match ? -1 : 1
-      return b.score - a.score
+      const left = a.suspicion_score ?? -1
+      const right = b.suspicion_score ?? -1
+      if (left !== right) return right - left
+      return a.listing_id.localeCompare(b.listing_id)
     })
     .slice(0, 5)
 }
