@@ -1,17 +1,17 @@
-# Stolen Bike Matcher — Hackathon Prototype Spec
+# Stolen Bike Matcher — Prototype Spec
 
-> **For Cursor:** This file is the single source of truth for the project. Read it fully before generating code. Follow the repo layout, data model, and API exactly. Build in the order given in the Task Checklist. Keep code simple, typed, and demo-ready — this is a 1-day prototype, not production.
+> Single source of truth for **this repo as implemented**. Layout, SQLite schema, and API paths are fixed; do not invent parallel stores or live scraping on the online path.
 
 ---
 
 ## 1. Product summary
 
-A user reports their stolen bike (photos + serial number + theft date/location). The app compares the report against a **pre-collected, pre-enriched dataset of ~200–300 second-hand bike listings** (Marktplaats) and returns a ranked list of candidate listings with human-readable reasons.
+A user reports a stolen bike (photos + optional serial + theft date/location). The app compares the report against a **pre-collected, locally stored set of second-hand listings** (Marktplaats via a one-time Apify scrape) and returns a ranked list of **candidates for police review**, never accusations.
 
-**Important constraints**
-- **No live scraping.** Listings are collected once, via targeted search queries, and stored locally.
-- Every report is matched against this fixed dataset.
-- Outputs are *candidates for police review*, never accusations.
+**Constraints**
+- **No live scraping** on the online path. Listings are collected once and stored in SQLite + files.
+- Every report is matched against that **fixed** corpus.
+- `suspicion_score` is shown **separately** and is **never** part of the match score or ranking.
 
 ---
 
@@ -19,83 +19,100 @@ A user reports their stolen bike (photos + serial number + theft date/location).
 
 ```mermaid
 flowchart LR
-    subgraph Offline["Offline track (build once)"]
-        A[Listing collector<br/>~250 filtered listings] --> B[Enrichment<br/>VLM + embeddings]
-        B --> C[(Listing store<br/>SQLite + vectors)]
+    subgraph Offline["Offline (build once)"]
+        A[Collector<br/>Apify / demo / JSONL] --> B[Enrichment<br/>VLM + CLIP + serial + risk]
+        B --> C[(SQLite data/bike.db<br/>+ photo files + caches)]
     end
-    subgraph Online["Online track (per report)"]
-        D[Report intake<br/>photo + serial] --> E[Enrich report<br/>same pipeline]
-        E --> F[Matcher<br/>filter + score + rerank]
-        F --> G[Candidates<br/>ranked + explained]
+    subgraph Online["Online (per report)"]
+        D[POST /reports] --> E[Same CLIP + optional VLM attrs]
+        E --> F[Filter + score + VLM rerank]
+        F --> G[Top-5 candidates + reasons]
     end
     C --> F
 ```
 
-Key principle: **reports and listings go through the exact same enrichment code**, so their attributes and embeddings are directly comparable.
+Reports and listings share the same enrichment functions (`extract_attributes`, CLIP encode, serial helpers) so vectors and attributes are comparable.
 
 ---
 
-## 3. Tech stack
+## 3. Tech stack (as built)
 
-| Concern | Choice |
+| Concern | Implementation |
 |---|---|
 | Language | Python 3.11+ |
-| Backend | FastAPI + Pydantic |
-| Database | SQLite (`data/bike.db`) |
-| Vector search | FAISS or `sqlite-vec` |
-| Image embeddings | `open_clip` (CLIP / SigLIP) |
-| Attribute extraction + rerank | Vision LLM (Claude or GPT) via API |
-| OCR (serials) | VLM or `easyocr` |
-| Frontend | Streamlit (fastest); Next.js only if the team is fluent |
+| Backend | FastAPI + Pydantic (`api/main.py`) |
+| Database | SQLite `data/bike.db` (schema in `db.py`) |
+| Vector search | In-memory brute-force numpy (`matching` uses listing `clip_vec` BLOBs; `ImageIndex` in `enrichment/embeddings.py`) — **not** FAISS / sqlite-vec |
+| Image + text embeddings | Local `open_clip` (`ViT-B-32` / `laion2b_s34b_b79k`), L2-normalised float32 |
+| Attributes + serial OCR + rerank | Vision LLM via **OpenRouter** (OpenAI-compatible) or **Gemini** if only `GOOGLE_API_KEY` is set; all calls go through `enrichment/llm_client.py` |
+| Serial from text | Keyword-anchored regex, then VLM on photos |
+| Frontend | Streamlit **form mockup only** (`app/streamlit_app.py`) — not wired to the API yet |
+| Collection | One-time **Apify** actor `haketa/marktplaats-scraper`, or synthetic demo / JSONL import |
 
-### Environment variables (`.env`)
+### Environment (`.env` / `.env.local`)
+
+Secrets live in **`.env.local`** (gitignored). `.env.example` is the template.
+
 ```
-ANTHROPIC_API_KEY=...        # or OPENAI_API_KEY
-VLM_MODEL=...                # vision-capable model name
+OPENROUTER_API_KEY=...
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+# Fallback if OpenRouter key is unset:
+# GOOGLE_API_KEY=...
+# GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+VLM_MODEL=qwen/qwen2.5-vl-72b-instruct   # or another OpenRouter / Gemini vision slug
 CLIP_MODEL=ViT-B-32
+CLIP_PRETRAINED=laion2b_s34b_b79k
+LLM_TIMEOUT_S=60
 DB_PATH=data/bike.db
 API_URL=http://localhost:8000
+APIFY_KEY=...                            # or APIFY_API_TOKEN
+APIFY_MARKTPLAATS_ACTOR_ID=haketa/marktplaats-scraper
 ```
+
+Tunables in `config.py` (not env): `MATCH_RADIUS_KM = 25`, `MATCH_WEIGHTS`, `RISK_WEIGHTS`, `VERIFY_TOP_K = 10`, `RESULT_TOP_K = 5`.
 
 ---
 
 ## 4. Repository layout
 
+Repo root is this project (not a nested `bike-matcher/` folder).
+
 ```
-bike-matcher/
+stolen-fiets-scanner/
 ├── data/
-│   ├── raw/listings.jsonl          # collected listing metadata
-│   ├── images/{listing_id}/        # downloaded listing photos
-│   ├── reports/{report_id}/        # user-uploaded photos
-│   └── bike.db                     # SQLite + vector tables
+│   ├── raw/listings.jsonl
+│   ├── images/{listing_id}/          # listing photos (posix paths in DB)
+│   ├── reports/{report_id}/          # intake JPEGs
+│   ├── cache/llm/                    # VLM JSON cache (gitignored)
+│   ├── cache/embeddings/text/        # CLIP text vectors as .npy (gitignored)
+│   └── bike.db
 ├── collector/
-│   ├── queries.yaml                # search terms, regions, price bands
-│   ├── collect.py                  # runs queries, dedupes, saves top ~250
-│   └── relevance_filter.py         # drops parts, kids' bikes, wanted-ads
+│   ├── queries.yaml                  # Maastricht 6211, 25 km, fiets, cat 1655, max 300
+│   ├── collect.py                    # --source apify|demo|jsonl
+│   ├── apify_marktplaats.py
+│   ├── relevance_filter.py
+│   └── demo_corpus.py
 ├── enrichment/
-│   ├── attributes.py               # VLM → structured bike attributes (JSON)
-│   ├── embeddings.py               # CLIP image + text embeddings
-│   ├── serial_ocr.py               # serial numbers from photos/text
-│   ├── risk_signals.py             # price anomaly + suspicious phrasing
-│   └── run_enrichment.py           # batch job over the whole dataset
+│   ├── llm_client.py                 # sole VLM helper (retries, JSON, disk cache)
+│   ├── attributes.py
+│   ├── embeddings.py                 # CLIP + ImageIndex
+│   ├── serial_ocr.py
+│   ├── risk_signals.py
+│   └── run_enrichment.py             # idempotent batch
 ├── matching/
-│   ├── filters.py                  # serial, date, distance, bike type
-│   ├── scorer.py                   # weighted similarity score
-│   ├── verifier.py                 # VLM pairwise "same bike?" rerank
-│   └── explain.py                  # human-readable match reasons
+│   ├── filters.py
+│   ├── scorer.py
+│   ├── verifier.py
+│   └── explain.py
 ├── api/
-│   ├── main.py                     # FastAPI app
-│   ├── schemas.py                  # Pydantic models
-│   └── routes/
-│       ├── reports.py
-│       └── listings.py
-├── app/
-│   └── streamlit_app.py            # report form + results view
-├── eval/
-│   ├── make_test_reports.py        # synthetic reports from held-out photos
-│   └── evaluate.py                 # recall@5, precision, timing
-├── .env.example
-├── requirements.txt
+│   ├── main.py
+│   ├── schemas.py
+│   └── routes/reports.py, listings.py
+├── app/streamlit_app.py
+├── eval/                             # stubs only (NotImplemented)
+├── db.py
+├── config.py
+├── SPEC.md
 └── README.md
 ```
 
@@ -104,171 +121,125 @@ bike-matcher/
 ## 5. Offline track
 
 ### 5.1 Collection (`collector/`)
-- `queries.yaml` contains **targeted** searches, not a broad crawl:
-  - Brands: Gazelle, Batavus, Cortina, VanMoof, Sparta, Cube, Trek, Giant
-  - Types: e-bike, racefiets, moederfiets, bakfiets, stadsfiets, mountainbike
-  - Region filter + price band
-- `collect.py`: run queries → dedupe by listing ID → save to `data/raw/listings.jsonl` and photos to `data/images/{listing_id}/`.
-- `relevance_filter.py`: drop parts, locks, accessories, kids' bikes, and "gezocht" (wanted) ads.
-- Target: **~250 listings**, each with title, description, price, location, posting date, seller id, URL, all photos.
-- Keep collection small, one-time, and within Marktplaats' terms of use. Manual/semi-manual collection is acceptable at this size.
+
+`collector/queries.yaml` is a **targeted** plan: brands + types as search *intent*, region Maastricht postcode `6211`, radius **25 km**, query `fiets`, category `1655`, `max_listings: 300`. There is **no** €200–€500 price cap (listing-count cap instead).
+
+```bash
+python collector/collect.py --source apify    # requires APIFY_KEY in .env.local
+python collector/collect.py --source demo
+python collector/collect.py --import-jsonl path/to/dump.jsonl
+```
+
+- Dedupes by listing id, writes `data/raw/listings.jsonl` and photos under `data/images/{id}/`.
+- `relevance_filter.py` drops parts, locks, accessories, kids’ bikes, and “gezocht”/wanted ads.
+- Replaces SQLite listings via `replace_listings_from_jsonl` (does **not** live-crawl Marktplaats from the API).
+- Current corpus after filter: **~235** listings (ids like `m2339783810`).
 
 ### 5.2 Enrichment (`enrichment/`)
-Run once over all listings via `run_enrichment.py`. Each step must be **idempotent** (skip already-processed listings) so it can be re-run safely.
 
-**`attributes.py`** — VLM receives photos + description, returns **strict JSON only**:
-```json
-{
-  "brand": "Gazelle",
-  "model": "Orange C7",
-  "bike_type": "city | e-bike | race | mtb | cargo | hybrid | other",
-  "colors": ["black"],
-  "frame_shape": "low-step | diamond | mixte | unknown",
-  "wheel_size": "28",
-  "is_electric": false,
-  "accessories": ["front basket", "rear rack", "frame lock"],
-  "marks": ["white sticker on down tube", "scratch on top tube"],
-  "confidence": 0.8
-}
+```bash
+python -m enrichment.run_enrichment            # all listings
+python -m enrichment.run_enrichment --limit 5  # smoke
+python -m enrichment.run_enrichment --only embeddings
 ```
-Validate with Pydantic; on parse failure retry once, then store nulls.
 
-**`embeddings.py`** — one CLIP vector per photo, one text vector per description. Normalise vectors (cosine similarity).
+Flags: `--force`, `--limit N`, `--only {attributes,embeddings,serial,risk}`. Each listing step is try/except + skip-if-done; progress every 25 rows.
 
-**`serial_ocr.py`** — OCR close-up frame photos + regex-scan description text for frame numbers. Store normalised serial (uppercase, no spaces/dashes).
+**`attributes.py`** — VLM photos + description → Pydantic `BikeAttributes` (strict JSON). Parse failure: retry once in `llm_client`, then store nulls. Idempotent skip if `brand` already stored.
 
-**`risk_signals.py`** — compute `suspicion_score` (0–1) from:
-- price far below median for same brand/type
-- phrases: "zonder papieren", "geen bon", "geen sleutel", "snel weg", "moet weg"
-- new or low-activity seller
+**`embeddings.py`** — local CLIP (first run downloads ~350MB weights). One L2-normalised vector per photo → `listing_images.clip_vec` / `report_images.clip_vec`. Description vectors **on disk** (`EMB_CACHE_DIR/text/{id}.npy`); **no** text-vector column. `ImageIndex.build_from_db` + `query()` is max cosine over any listing photo vs any query photo.
 
-> ⚠️ `suspicion_score` is shown **separately** and is **never** part of the match score.
+**`serial_ocr.py`** — `normalise_serial` (uppercase `[A-Z0-9]`). Text: keyword-anchored (`framenummer`, `serial`, …) then photos via VLM `{"serial": string|null}`. Writes **only** `listing_attributes.serial_found`.
+
+**`risk_signals.py`** — local, no model. Score in `[0,1]` = `0.5` price-below-median (by `bike_type`, else global) + `0.35` fraction of suspicion phrases + `0.15` single-listing seller **proxy** (no real seller history). Phrases: *zonder papieren, geen bon, geen sleutel, snel weg, moet weg*. Overwrites `listings.suspicion_score`.
+
+> ⚠️ `suspicion_score` is display-only and is **never** used in `matching/scorer.py`.
 
 ---
 
 ## 6. Data model (SQLite)
 
+Unchanged from the original schema (`db.py` `SCHEMA_SQL`). Helpers: listings import, `insert_report` / `add_report_image` / `fetch_report`, `upsert_match` / `fetch_matches`, `fetch_listings_for_matching`.
+
 ```sql
-CREATE TABLE listings (
-  id TEXT PRIMARY KEY,
-  title TEXT, description TEXT, price REAL,
-  location TEXT, lat REAL, lon REAL,
-  posted_at TIMESTAMP, seller_id TEXT, url TEXT,
-  suspicion_score REAL
-);
-
-CREATE TABLE listing_images (
-  id INTEGER PRIMARY KEY,
-  listing_id TEXT REFERENCES listings(id),
-  path TEXT, clip_vec BLOB
-);
-
-CREATE TABLE listing_attributes (
-  listing_id TEXT PRIMARY KEY REFERENCES listings(id),
-  brand TEXT, model TEXT, bike_type TEXT, colors JSON,
-  frame_shape TEXT, wheel_size TEXT, is_electric BOOLEAN,
-  accessories JSON, marks JSON, serial_found TEXT
-);
-
-CREATE TABLE reports (
-  id TEXT PRIMARY KEY,
-  created_at TIMESTAMP, stolen_at TIMESTAMP,
-  stolen_lat REAL, stolen_lon REAL,
-  serial TEXT, brand TEXT, color TEXT, notes TEXT,
-  police_report_nr TEXT
-);
-
-CREATE TABLE report_images (
-  id INTEGER PRIMARY KEY,
-  report_id TEXT REFERENCES reports(id),
-  path TEXT, clip_vec BLOB
-);
-
-CREATE TABLE matches (
-  report_id TEXT REFERENCES reports(id),
-  listing_id TEXT REFERENCES listings(id),
-  score REAL, serial_match BOOLEAN,
-  verdict TEXT,          -- likely_same | possibly_same | different
-  reasons JSON,
-  created_at TIMESTAMP,
-  PRIMARY KEY (report_id, listing_id)
-);
+-- listings, listing_images (path, clip_vec BLOB),
+-- listing_attributes (JSON colors/accessories/marks, serial_found),
+-- reports (no location column; lat/lon only),
+-- report_images (path, clip_vec BLOB),
+-- matches (score, serial_match, verdict, reasons JSON)
 ```
+
+Image paths are posix and relative, e.g. `data/images/m2339783810/0.jpg`, `data/reports/r_abc12345/0.jpg`.
 
 ---
 
 ## 7. Online track
 
-### 7.1 Report intake
-User submits:
-- 1–5 photos (required)
-- serial number (optional but strongly encouraged)
-- brand, colour (optional)
-- theft date + location (required)
-- police report number (optional)
+### 7.1 Report intake — `POST /reports`
 
-Report photos go through the **same** `attributes.py` and `embeddings.py` as listings.
+Multipart: **1–5** photos (jpg/jpeg/png/webp), required `stolen_at` (ISO date/datetime). Optional: `location`, `stolen_lat`/`stolen_lon`, `serial`, `brand`, `color`, `notes`, `police_report_nr`.
 
-### 7.2 Matching (`matching/`) — three stages
+- `report_id` = `r_` + 8 hex chars.
+- Coords: explicit lat+lon, else **offline gazetteer** (Maastricht, Valkenburg, Meerssen, Heerlen, Sittard, Roermond, Genk, Hasselt, Liège, Aachen, Tongeren, Bilzen). Unknown city → null coords, **not** 422.
+- Photos re-encoded RGB JPEG (strips EXIF/GPS).
+- Always: CLIP image + text embed. VLM attributes are **best-effort** (missing key does not fail intake).
+- Response `201` `{ "report_id": "r_..." }`.
 
-**Stage 1 — hard filters (`filters.py`)**
-- **Serial match** (exact or fuzzy with OCR confusions `0/O`, `1/I/L`, `5/S`, `8/B`) → flag as top candidate immediately.
-- Remove listings posted **before** `stolen_at`.
-- Remove clearly incompatible types (e.g. e-bike vs non-e-bike).
-- Remove listings outside a configurable radius (default 50 km).
+### 7.2 Matching — three stages
 
-**Stage 2 — weighted score (`scorer.py`)**
+**Stage 1 (`filters.py`)**
+- Canonical serial: `normalise_serial` then OCR map `O→0`, `I/L→1`, `S→5`, `B→8`. Hits **bypass** other filters and pin to the front.
+- Else drop if: parseable `posted_at` **before** `stolen_at`; **or** both sides have known `is_electric` and they disagree; **or** both have coords and haversine **> 25 km**. Missing fields → **keep** (conservative). Unparseable `posted_at` (e.g. Marktplaats `"Vandaag"`) does not drop.
+
+**Stage 2 (`scorer.py`)** — do **not** renormalise missing modalities:
+
 ```
-score = 0.45 × max image cosine similarity (any report photo vs any listing photo)
-      + 0.30 × attribute agreement (brand, model, colour, frame, accessories)
-      + 0.15 × distinctive-mark overlap
-      + 0.10 × text similarity
+score = 0.45 × max image cosine
+      + 0.30 × attribute agreement (brand, model, colour, frame, accessories, bike_type)
+      + 0.15 × mark overlap
+      + 0.10 × text cosine
 ```
-Weights live in a config dict so they can be tuned during evaluation. Serial match overrides score to `1.0`.
 
-**Stage 3 — VLM rerank (`verifier.py`)**
-- Send top ~10 to the VLM with report photos and listing photos side by side.
-- Return strict JSON: `{"verdict": "likely_same|possibly_same|different", "reasons": [...], "confidence": 0-1}`.
-- Final ranking combines Stage 2 score and verdict.
+Serial hit → `score = 1.0`. `suspicion_score` is not read.
 
-**Explanations (`explain.py`)** — turn attributes + verdict into short readable reasons, e.g.:
-> "Same rear rack and blue AXA lock · sticker on down tube · posted 3 days after theft, 12 km away"
+**Stage 3 (`verifier.py`)** — VLM on top `VERIFY_TOP_K` (10). Serial hits skip VLM (`likely_same`, confidence 1). Sort: `likely_same` > `possibly_same` > no verdict > `different`, then Stage-2 score. Numeric `score` stays Stage-2.
 
-### 7.3 Results page
-- Top 5 candidates as **side-by-side photo pairs**
-- Confidence badge (verdict + score)
-- Link to listing
-- Match reasons
-- Separate suspicion indicator
-- Next-steps box: add listing to the police report, check the serial via the police Stop Heling service, **do not confront the seller**
+**`explain.py`** — short strings: exact serial, shared brand/colour/frame/accessories, marks, verifier reasons, “posted N days after theft, K km away”.
+
+Pipeline returns `RESULT_TOP_K` (5), serial hits first; rows persisted in `matches`. Missing VLM key: ranking still runs on image+text (+attributes if cached).
+
+### 7.3 Results (API)
+
+Top 5 JSON candidates: score, verdict, reasons, listing URL, **display** `suspicion_score`, first listing photo + first report photo. Streamlit does **not** render this yet.
 
 ---
 
 ## 8. API
 
-| Method | Path | Description |
+| Method | Path | Status |
 |---|---|---|
-| `POST` | `/reports` | Create report (multipart: photos + fields) → `{report_id}` |
-| `POST` | `/reports/{id}/match` | Run matching → ranked candidates |
-| `GET` | `/reports/{id}/matches` | Cached results |
-| `GET` | `/listings/{id}` | Listing detail + attributes |
-| `GET` | `/health` | Health check |
+| `GET` | `/health` | `{status, listings}` |
+| `GET` | `/listings/{id}` | Detail + attributes + image paths |
+| `POST` | `/reports` | Multipart intake → `ReportCreated` (201) |
+| `POST` | `/reports/{id}/match` | Run matcher → `MatchResponse` (404 if no report) |
+| `GET` | `/reports/{id}/matches` | Cached matches (404 if none / unknown report) |
 
-Candidate response shape:
+Candidate shape:
+
 ```json
 {
-  "report_id": "r_123",
+  "report_id": "r_c7b4b2f1",
   "candidates": [
     {
-      "listing_id": "m_456",
+      "listing_id": "m2339783810",
       "url": "https://...",
-      "score": 0.87,
+      "score": 0.73,
       "serial_match": false,
       "verdict": "likely_same",
-      "reasons": ["Same rear rack and blue lock", "Sticker on down tube"],
-      "suspicion_score": 0.6,
-      "listing_image": "data/images/m_456/0.jpg",
-      "report_image": "data/reports/r_123/0.jpg"
+      "reasons": ["strong photo similarity"],
+      "suspicion_score": 0.15,
+      "listing_image": "data/images/m2339783810/0.jpg",
+      "report_image": "data/reports/r_c7b4b2f1/0.jpg"
     }
   ]
 }
@@ -278,59 +249,39 @@ Candidate response shape:
 
 ## 9. Evaluation (`eval/`)
 
-No real stolen-bike pairs exist, so manufacture ground truth:
-1. Pick ~30 listings with multiple photos.
-2. Hold one photo out → use as a synthetic "report" photo (optionally crop, change lighting/angle).
-3. Run matching; check whether the source listing appears in the top 5.
-4. Plant 2–3 reports with an exact serial match to demo the fast path.
-
-Report: **recall@5**, **recall@1**, average match time per report. Print a summary table.
+`eval/make_test_reports.py` and `eval/evaluate.py` are **stubs** (`NotImplementedError`). Informal check used: held-out listing photo via `POST /reports` then `/match` (source listing in top 5); planted serial → `serial_match` true, score 1.0, `likely_same`.
 
 ---
 
-## 10. Task checklist (build order)
+## 10. Implementation status
 
-- [ ] **Setup:** repo layout, `requirements.txt`, `.env.example`, SQLite schema init script
-- [ ] **Collector:** `queries.yaml`, `collect.py`, `relevance_filter.py` → ~250 listings in `data/`
-- [ ] **Enrichment:** `attributes.py` (VLM JSON) with Pydantic validation
-- [ ] **Enrichment:** `embeddings.py` + vector index
-- [ ] **Enrichment:** `serial_ocr.py`, `risk_signals.py`, `run_enrichment.py`
-- [ ] **API:** FastAPI skeleton, schemas, `/health`, `/listings/{id}`
-- [ ] **API:** `POST /reports` with photo upload + report enrichment
-- [ ] **Matching:** `filters.py` → `scorer.py` → `POST /reports/{id}/match`
-- [ ] **Matching:** `verifier.py` VLM rerank + `explain.py`
-- [ ] **Frontend:** Streamlit report form
-- [ ] **Frontend:** results page with side-by-side comparisons
-- [ ] **Eval:** `make_test_reports.py` + `evaluate.py`
-- [ ] **Polish:** demo script, README, seed demo reports
-
-### Suggested team split (3 people, ~12h)
-
-| Time | A — Data | B — Backend/ML | C — Frontend |
-|---|---|---|---|
-| 0–2h | Collect + clean dataset | Schema + FastAPI skeleton | Streamlit form mockup |
-| 2–5h | VLM attribute extraction | CLIP embeddings + vector index | Intake wired to API |
-| 5–8h | Risk signals + serial OCR | Filters + scorer | Results page |
-| 8–10h | VLM rerank + explanations | Evaluation script | Polish, demo script |
-| 10–12h | Buffer, fixes, pitch rehearsal | | |
+| Item | Status |
+|---|---|
+| Layout, `requirements.txt`, `.env.example`, SQLite | Done |
+| Collector (Apify + filter + ~235 listings) | Done |
+| VLM attributes, CLIP + `ImageIndex` | Done |
+| Serial OCR, risk, `run_enrichment` | Done |
+| FastAPI `/health`, `/listings/{id}`, `POST /reports` | Done |
+| Matcher + `/match` + cached `/matches` | Done |
+| Streamlit results / API wiring | **Not done** (form mockup only) |
+| Eval recall scripts | **Not done** |
 
 ---
 
-## 11. Coding conventions (for Cursor)
+## 11. Coding conventions
 
-- Type hints everywhere; Pydantic models for all LLM outputs and API I/O.
-- All LLM calls go through one helper (`enrichment/llm_client.py`) with retries, timeouts, and JSON parsing.
-- **Cache** every LLM and embedding result to disk/DB — never re-pay for the same listing.
-- Batch jobs are idempotent and resumable; log progress with counts.
-- Config (weights, radius, model names) in one `config.py`, loaded from `.env`.
-- No secrets in code. No live scraping in the online path.
-- Prefer small, testable functions; add a `__main__` block to each script for quick runs.
+- Type hints; Pydantic for LLM JSON and API I/O.
+- **All** VLM calls through `enrichment/llm_client.py` (timeout, retry, `parse_json_loose`, disk cache).
+- Cache embeddings (SQLite BLOBs / `.npy`) and LLM outputs — do not silently re-pay.
+- Batch jobs idempotent; log skip/done counts.
+- Config in `config.py` + dotenv. No secrets in git. No online scraping.
+- Small functions and `__main__` smoke blocks on enrichment/matching modules.
 
 ---
 
-## 12. Costs & risks
+## 12. Costs, ethics, legal
 
-- **Costs:** enrichment is one-off (~250 listings × ~4 photos through a vision model ≈ a few dollars). Each report rerank ≈ cents. Model API costs are **separate** from Cursor credits.
-- **False positives:** many city bikes look alike (e.g. thousands of black Gazelles). Distinctive marks + VLM verification matter more than raw image similarity.
-- **Ethics & privacy:** results are candidates for police review, not accusations. Store minimal seller data; delete the dataset after the demo.
-- **Legal:** keep collection small, one-time, and within platform terms.
+- CLIP is local (one-time weight download). VLM cost is OpenRouter/Gemini usage (attributes, serial OCR, pairwise verify). Disk cache avoids repeats.
+- Many city bikes look alike; serial + marks + VLM matter more than CLIP alone. Only a subset of listings may have CLIP/VLM rows until `run_enrichment` is run on the full set.
+- Candidates for police review — do not confront sellers. Minimal seller fields; delete demo data after use.
+- Collection is small, one-shot, via Apify — not a Marktplaats site crawl from this app.
