@@ -20,11 +20,11 @@ types:
   - mountainbike
 
 region:
-  name: Amsterdam
-  radius_km: 50
+  name: Maastricht
+  radius_km: 30
 
 price_bands:
   min_eur: 100
-  max_eur: 5500
+  max_eur: 500
 
 max_listings: 250
