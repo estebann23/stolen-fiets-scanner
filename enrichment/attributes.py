@@ -41,9 +41,13 @@ Reply with STRICT JSON only — a single object matching this schema, no markdow
 }
 Allowed bike_type values: city, e-bike, race, mtb, cargo, hybrid, other.
 Allowed frame_shape values: low-step, diamond, mixte, unknown.
-The description may be Dutch. Normalise colours to canonical English
+The description may be Dutch. Use BOTH the photos and the listing text.
+If the text names a brand or model, copy them (normalise casing; do not invent).
+Normalise colours to canonical English
 (black, grey, blue, green, white, red, silver, anthracite, and similar).
-If unsure, use null (or "unknown" for frame_shape). Set confidence between 0 and 1.
+If a field is truly unknown, use null (or "unknown" for frame_shape).
+Do not return an all-null object when brand, type, or colour is visible.
+Set confidence between 0 and 1.
 """
 
 
@@ -251,7 +255,18 @@ def main() -> None:
         sys.exit(0)
     conn = connect()
     try:
-        row = conn.execute("SELECT id FROM listings LIMIT 1").fetchone()
+        row = conn.execute(
+            """
+            SELECT id FROM listings
+            WHERE lower(coalesce(title, '')) LIKE '%fiets%'
+            ORDER BY id
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            row = conn.execute(
+                "SELECT id FROM listings ORDER BY id LIMIT 1"
+            ).fetchone()
         if row is None:
             print("No listings in the database.")
             sys.exit(0)
