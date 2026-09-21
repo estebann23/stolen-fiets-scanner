@@ -63,3 +63,8 @@ MATCH_WEIGHTS = {
     "marks": 0.15,
     "text": 0.10,
 }
+RISK_WEIGHTS: dict[str, float] = {
+    "price": 0.5,
+    "phrases": 0.35,
+    "seller": 0.15,
+}
