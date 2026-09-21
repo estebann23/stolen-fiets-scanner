@@ -10,3 +10,5 @@ httpx
 numpy
 apify-client
 openai
+open-clip-torch
+torch
